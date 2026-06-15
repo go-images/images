@@ -19,5 +19,7 @@
 //
 // Phase 0 implements Grayscale, Invert, Resize (nearest-neighbour and
 // bilinear), Convolve (arbitrary odd-sized kernels with edge clamping),
-// GaussianBlur (separable), AdjustBrightness and AdjustContrast.
+// GaussianBlur (separable), AdjustBrightness and AdjustContrast. Phase 1 adds
+// Sobel edge detection: Sobel (gradient magnitude), SobelX and SobelY
+// (directional responses).
 package images

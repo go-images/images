@@ -77,9 +77,15 @@ shape that maps onto vector registers.
 - 100% statement coverage; CI on three OSes + six 64-bit arches (native
   amd64/arm64, qemu riscv64/loong64/ppc64le/s390x).
 
-### Phase 1 — more filters & transforms
+### Phase 1 — more filters & transforms (in progress)
 
-- Sharpen/unsharp-mask, Sobel/Prewitt edge detection, emboss.
+- **Sobel edge detection (DONE)** — `Sobel` (gradient magnitude),
+  `SobelX`/`SobelY` (directional responses), all on Rec. 601 luminance with
+  clamp-to-edge borders. The luminance plane is computed once and the
+  gradient/magnitude pass is fused with unrolled kernel taps; a benchmark
+  compares it to an unfused two-pass baseline and a differential test pins it to
+  an independent naive reference.
+- Sharpen/unsharp-mask, Prewitt edge detection, emboss.
 - Median and bilateral filters.
 - Box blur (sliding-window O(1) per pixel).
 - Geometric transforms: flip, rotate (90°/arbitrary), crop, affine/warp.

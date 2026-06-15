@@ -3,7 +3,7 @@
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-images.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
-[![Status](https://img.shields.io/badge/status-phase%200-9a6700)](docs/plan-images.md)
+[![Status](https://img.shields.io/badge/status-phase%201-9a6700)](docs/plan-images.md)
 
 **A pure-Go (no cgo) image-processing library** in the style of
 [scikit-image](https://scikit-image.org/), built entirely on the Go standard
@@ -32,7 +32,7 @@ targets (amd64, arm64, riscv64, loong64, ppc64le, s390x). See
 [docs/plan-images.md](docs/plan-images.md) for the roadmap and an honest
 comparison.
 
-## Phase 0 API
+## API
 
 ```go
 import "github.com/go-images/images"
@@ -55,6 +55,8 @@ Operations (each returns a new `*image.RGBA`):
 - `images.Resize(img, w, h, mode)` — `images.NearestNeighbor` or `images.Bilinear`
 - `images.Convolve(img, images.Kernel{...})` — arbitrary odd kernel, clamp-to-edge
 - `images.GaussianBlur(img, sigma)` — separable Gaussian
+- `images.Sobel(img)` — gradient-magnitude edge map (on luminance)
+- `images.SobelX(img)` / `images.SobelY(img)` — directional Sobel responses (mid-grey = zero gradient)
 
 ### Example
 
