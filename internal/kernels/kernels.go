@@ -187,6 +187,103 @@ func ConvolveSeparable(dst, tmp, src []uint8, width, height int, k []float64) {
 	}
 }
 
+// lumaPlane converts the width*height RGBA image src to a tightly packed plane
+// of Rec. 601 luminance values (one float64 per pixel, matching the Grayscale
+// coefficients 0.299, 0.587, 0.114). Computing the plane once keeps each source
+// pixel's luminance from being recomputed for every kernel tap that reads it.
+func lumaPlane(src []uint8, width, height int) []float64 {
+	lum := make([]float64, width*height)
+	for i := range lum {
+		j := i * 4
+		lum[i] = 0.299*float64(src[j]) + 0.587*float64(src[j+1]) + 0.114*float64(src[j+2])
+	}
+	return lum
+}
+
+// sobelGradients computes, for the pixel at (x, y) of a width*height luminance
+// plane lum, the horizontal (gx) and vertical (gy) Sobel responses, using
+// clamp-to-edge addressing at the borders.
+//
+// The Sobel kernels are
+//
+//	gx = [-1 0 1; -2 0 2; -1 0 1]   gy = [-1 -2 -1; 0 0 0; 1 2 1]
+//
+// fully unrolled below: with both kernels' middle column (gx) and middle row
+// (gy) being zero, only six taps contribute to each gradient.
+func sobelGradients(lum []float64, width, height, x, y int) (gx, gy float64) {
+	x0 := clampIndex(x-1, width)
+	x1 := clampIndex(x+1, width)
+	y0 := clampIndex(y-1, height)
+	y1 := clampIndex(y+1, height)
+	tl := lum[y0*width+x0]
+	tc := lum[y0*width+x]
+	tr := lum[y0*width+x1]
+	ml := lum[y*width+x0]
+	mr := lum[y*width+x1]
+	bl := lum[y1*width+x0]
+	bc := lum[y1*width+x]
+	br := lum[y1*width+x1]
+	gx = (tr - tl) + 2*(mr-ml) + (br - bl)
+	gy = (bl - tl) + 2*(bc-tc) + (br - tr)
+	return gx, gy
+}
+
+// Sobel writes the Sobel gradient magnitude of src into dst. The operator is
+// applied to the per-pixel Rec. 601 luminance; the magnitude sqrt(gx^2+gy^2) is
+// clamped to [0, 255] and written to the R, G and B channels (a grayscale edge
+// map). Alpha is copied from the corresponding source pixel. Edges use
+// clamp-to-edge addressing. src and dst are RGBA slices of width*height pixels.
+func Sobel(dst, src []uint8, width, height int) {
+	lum := lumaPlane(src, width, height)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			gx, gy := sobelGradients(lum, width, height, x, y)
+			m := ClampByte(math.Sqrt(gx*gx + gy*gy))
+			di := (y*width + x) * 4
+			dst[di] = m
+			dst[di+1] = m
+			dst[di+2] = m
+			dst[di+3] = src[di+3]
+		}
+	}
+}
+
+// SobelX writes the horizontal Sobel response of src into dst. The signed
+// gradient is divided by 8 (the kernel's L1 gain) and offset by 128 so that a
+// zero gradient maps to mid-grey, a strong left-to-right rising edge towards
+// white and a falling edge towards black; the result is clamped to [0, 255] and
+// written to R, G and B. Alpha is preserved. See Sobel for the addressing rules.
+func SobelX(dst, src []uint8, width, height int) {
+	sobelDirectional(dst, src, width, height, true)
+}
+
+// SobelY writes the vertical Sobel response of src into dst, with the same
+// scaling and offset convention as SobelX. Alpha is preserved.
+func SobelY(dst, src []uint8, width, height int) {
+	sobelDirectional(dst, src, width, height, false)
+}
+
+// sobelDirectional implements the shared body of SobelX (horizontal=true) and
+// SobelY (horizontal=false).
+func sobelDirectional(dst, src []uint8, width, height int, horizontal bool) {
+	lum := lumaPlane(src, width, height)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			gx, gy := sobelGradients(lum, width, height, x, y)
+			g := gy
+			if horizontal {
+				g = gx
+			}
+			v := ClampByte(g/8 + 128)
+			di := (y*width + x) * 4
+			dst[di] = v
+			dst[di+1] = v
+			dst[di+2] = v
+			dst[di+3] = src[di+3]
+		}
+	}
+}
+
 // ResizeNearest scales a width*height source image into a dstW*dstH destination
 // using nearest-neighbour sampling.
 func ResizeNearest(dst, src []uint8, srcW, srcH, dstW, dstH int) {

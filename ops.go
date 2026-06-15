@@ -106,6 +106,43 @@ func Convolve(img image.Image, k Kernel) (*image.RGBA, error) {
 	return dst, nil
 }
 
+// Sobel returns the Sobel gradient-magnitude edge map of img. The operator is
+// applied to each pixel's Rec. 601 luminance with clamp-to-edge borders; the
+// magnitude is clamped to [0, 255] and written to the R, G and B channels,
+// producing a grayscale edge image. Alpha is preserved. Strong intensity
+// transitions appear bright, flat regions dark.
+func Sobel(img image.Image) *image.RGBA {
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := newLike(src)
+	kernels.Sobel(dst.Pix, src.Pix, b.Dx(), b.Dy())
+	return dst
+}
+
+// SobelX returns the horizontal Sobel response of img: an estimate of the
+// left-to-right intensity derivative of each pixel's luminance. The signed
+// response is scaled and offset so a zero gradient is mid-grey (128), a rising
+// edge brighter and a falling edge darker, clamped to [0, 255] and written to
+// R, G and B. Alpha is preserved; borders use clamp-to-edge addressing.
+func SobelX(img image.Image) *image.RGBA {
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := newLike(src)
+	kernels.SobelX(dst.Pix, src.Pix, b.Dx(), b.Dy())
+	return dst
+}
+
+// SobelY returns the vertical Sobel response of img: an estimate of the
+// top-to-bottom intensity derivative of each pixel's luminance, with the same
+// scaling, offset and addressing conventions as SobelX. Alpha is preserved.
+func SobelY(img image.Image) *image.RGBA {
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := newLike(src)
+	kernels.SobelY(dst.Pix, src.Pix, b.Dx(), b.Dy())
+	return dst
+}
+
 // GaussianBlur returns img blurred by a Gaussian of standard deviation sigma,
 // implemented as a separable convolution with clamp-to-edge borders. It returns
 // an error if sigma is not positive.
