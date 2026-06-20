@@ -143,6 +143,24 @@ func SobelY(img image.Image) *image.RGBA {
 	return dst
 }
 
+// BoxBlur returns img blurred by a square averaging filter of the given radius:
+// every output pixel is the mean of the (2*radius+1) by (2*radius+1) source
+// neighbourhood centred on it, computed independently per R, G and B channel
+// (alpha preserved). Borders use clamp-to-edge addressing, matching
+// scipy.ndimage.uniform_filter with mode="nearest" and size 2*radius+1. The
+// filter is separable and evaluated with a running window sum, so its cost is
+// independent of the radius. It returns an error if radius is not positive.
+func BoxBlur(img image.Image, radius int) (*image.RGBA, error) {
+	if radius <= 0 {
+		return nil, fmt.Errorf("images: box blur: radius must be positive, got %d", radius)
+	}
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := newLike(src)
+	kernels.BoxBlur(dst.Pix, src.Pix, b.Dx(), b.Dy(), radius)
+	return dst, nil
+}
+
 // GaussianBlur returns img blurred by a Gaussian of standard deviation sigma,
 // implemented as a separable convolution with clamp-to-edge borders. It returns
 // an error if sigma is not positive.

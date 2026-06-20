@@ -187,6 +187,104 @@ func ConvolveSeparable(dst, tmp, src []uint8, width, height int, k []float64) {
 	}
 }
 
+// BoxBlur applies a (2*radius+1) by (2*radius+1) averaging filter to src,
+// writing the result into dst. It is implemented as a separable pair of
+// one-dimensional moving-average passes, each maintaining a running window sum
+// so the per-pixel cost is O(1) in the radius rather than O(radius). The
+// intermediate result is carried in floating point (one value per channel per
+// pixel) so the two passes compose to the exact two-dimensional mean, with a
+// single rounding at the end — matching scipy.ndimage.uniform_filter (which is
+// likewise separable and stays in float). Edges use clamp-to-edge addressing
+// (uniform_filter's mode="nearest"); the R, G and B channels are averaged and
+// alpha is preserved. dst and src are RGBA pixel slices of width*height pixels
+// and must be distinct. radius must be >= 1.
+func BoxBlur(dst, src []uint8, width, height, radius int) {
+	win := 2*radius + 1
+	inv := 1.0 / float64(win)
+	// mid holds the horizontal-pass result as floats: three channels per pixel,
+	// already divided by the window width, ready for the vertical pass.
+	mid := make([]float64, width*height*3)
+	// Horizontal pass: src bytes -> mid floats.
+	for y := 0; y < height; y++ {
+		rowSrc := y * width * 4
+		rowMid := y * width * 3
+		boxBlurH(mid, src, rowMid, rowSrc, width, radius, inv)
+	}
+	// Vertical pass: mid floats -> dst bytes, with alpha copied from src.
+	for x := 0; x < width; x++ {
+		boxBlurV(dst, mid, src, x, width, height, radius, inv)
+	}
+}
+
+// boxBlurH runs the horizontal moving-average over one row of `n` pixels read
+// from src (RGBA bytes, base byte offset srcBase) and writes the per-channel
+// windowed means as floats into mid (3 floats per pixel, base index midBase).
+// Samples beyond the row ends are clamped to the first/last pixel.
+func boxBlurH(mid []float64, src []uint8, midBase, srcBase, n, radius int, inv float64) {
+	sample := func(i int) int {
+		if i < 0 {
+			i = 0
+		} else if i >= n {
+			i = n - 1
+		}
+		return srcBase + i*4
+	}
+	var sr, sg, sb float64
+	for i := -radius; i <= radius; i++ {
+		si := sample(i)
+		sr += float64(src[si])
+		sg += float64(src[si+1])
+		sb += float64(src[si+2])
+	}
+	for i := 0; i < n; i++ {
+		mi := midBase + i*3
+		mid[mi] = sr * inv
+		mid[mi+1] = sg * inv
+		mid[mi+2] = sb * inv
+		lo := sample(i - radius)
+		hi := sample(i + radius + 1)
+		sr += float64(src[hi]) - float64(src[lo])
+		sg += float64(src[hi+1]) - float64(src[lo+1])
+		sb += float64(src[hi+2]) - float64(src[lo+2])
+	}
+}
+
+// boxBlurV runs the vertical moving-average over one column x of `height`
+// samples taken from the float plane mid (3 floats per pixel, row stride
+// width*3), writing the rounded R, G, B into dst (RGBA bytes) and copying alpha
+// from src. Samples beyond the column ends are clamped to the first/last row.
+func boxBlurV(dst []uint8, mid []float64, src []uint8, x, width, height, radius int, inv float64) {
+	stride := width * 3
+	base := x * 3
+	sample := func(i int) int {
+		if i < 0 {
+			i = 0
+		} else if i >= height {
+			i = height - 1
+		}
+		return base + i*stride
+	}
+	var sr, sg, sb float64
+	for i := -radius; i <= radius; i++ {
+		si := sample(i)
+		sr += mid[si]
+		sg += mid[si+1]
+		sb += mid[si+2]
+	}
+	for i := 0; i < height; i++ {
+		di := (i*width + x) * 4
+		dst[di] = ClampByte(sr * inv)
+		dst[di+1] = ClampByte(sg * inv)
+		dst[di+2] = ClampByte(sb * inv)
+		dst[di+3] = src[di+3]
+		lo := sample(i - radius)
+		hi := sample(i + radius + 1)
+		sr += mid[hi] - mid[lo]
+		sg += mid[hi+1] - mid[lo+1]
+		sb += mid[hi+2] - mid[lo+2]
+	}
+}
+
 // lumaPlane converts the width*height RGBA image src to a tightly packed plane
 // of Rec. 601 luminance values (one float64 per pixel, matching the Grayscale
 // coefficients 0.299, 0.587, 0.114). Computing the plane once keeps each source
@@ -282,6 +380,326 @@ func sobelDirectional(dst, src []uint8, width, height int, horizontal bool) {
 			dst[di+3] = src[di+3]
 		}
 	}
+}
+
+// morphOp selects the per-window reduction used by the separable morphology
+// passes: the minimum (erosion) or the maximum (dilation).
+type morphOp bool
+
+const (
+	morphMin morphOp = false
+	morphMax morphOp = true
+)
+
+// Erode applies grayscale erosion (per-channel local minimum over a
+// (2*radius+1)-square structuring element) to src, writing the result into dst.
+// Dilate applies the corresponding local maximum. Both use clamp-to-edge
+// addressing and preserve alpha, and both are separable (a horizontal min/max
+// pass followed by a vertical one), matching a square footprint in
+// scipy.ndimage.grey_erosion / grey_dilation. dst and src are RGBA slices of
+// width*height pixels; radius must be >= 1.
+func Erode(dst, src []uint8, width, height, radius int) {
+	morph(dst, src, width, height, radius, morphMin)
+}
+
+// Dilate applies grayscale dilation; see Erode.
+func Dilate(dst, src []uint8, width, height, radius int) {
+	morph(dst, src, width, height, radius, morphMax)
+}
+
+// morph runs the separable grayscale morphology (erode or dilate) into dst via
+// an internal scratch buffer.
+func morph(dst, src []uint8, width, height, radius int, op morphOp) {
+	tmp := make([]uint8, len(src))
+	// Horizontal pass: src -> tmp.
+	for y := 0; y < height; y++ {
+		row := y * width * 4
+		morph1D(tmp, src, row, 4, width, radius, op)
+	}
+	// Vertical pass: tmp -> dst.
+	stride := width * 4
+	for x := 0; x < width; x++ {
+		morph1D(dst, tmp, x*4, stride, height, radius, op)
+	}
+}
+
+// morph1D runs one min/max pass over a single line of n pixels of src starting
+// at byte offset base with the given stride, writing the windowed per-channel
+// reduction into dst at the same positions. Out-of-range samples are clamped to
+// the line ends. Alpha is copied through unchanged.
+func morph1D(dst, src []uint8, base, stride, n, radius int, op morphOp) {
+	sample := func(i int) int {
+		if i < 0 {
+			i = 0
+		} else if i >= n {
+			i = n - 1
+		}
+		return base + i*stride
+	}
+	reduce := func(acc, v uint8) uint8 {
+		if op == morphMax {
+			if v > acc {
+				return v
+			}
+			return acc
+		}
+		if v < acc {
+			return v
+		}
+		return acc
+	}
+	for i := 0; i < n; i++ {
+		first := sample(i - radius)
+		ar, ag, ab := src[first], src[first+1], src[first+2]
+		for k := -radius + 1; k <= radius; k++ {
+			si := sample(i + k)
+			ar = reduce(ar, src[si])
+			ag = reduce(ag, src[si+1])
+			ab = reduce(ab, src[si+2])
+		}
+		di := base + i*stride
+		dst[di] = ar
+		dst[di+1] = ag
+		dst[di+2] = ab
+		dst[di+3] = src[base+i*stride+3]
+	}
+}
+
+// Histogram returns the 256-bin histogram of the Rec. 601 luminance of src
+// (rounded to the nearest integer with ClampByte). src is an RGBA slice.
+func Histogram(src []uint8) [256]int {
+	var h [256]int
+	for i := 0; i < len(src); i += 4 {
+		y := ClampByte(0.299*float64(src[i]) + 0.587*float64(src[i+1]) + 0.114*float64(src[i+2]))
+		h[y]++
+	}
+	return h
+}
+
+// OtsuThreshold returns the gray level in [0, 255] that maximises the
+// between-class variance of the luminance histogram of src (Otsu's method).
+// This matches the threshold chosen by skimage.filters.threshold_otsu on the
+// 256-bin histogram: pixels with luminance strictly greater than the returned
+// value are foreground. For a degenerate single-valued image it returns that
+// value.
+func OtsuThreshold(src []uint8) uint8 {
+	h := Histogram(src)
+	total := 0
+	var sum float64
+	for i, c := range h {
+		total += c
+		sum += float64(i) * float64(c)
+	}
+	var sumB float64
+	wB := 0
+	var maxVar float64
+	best := 0
+	for t := 0; t < 256; t++ {
+		wB += h[t]
+		if wB == 0 {
+			continue
+		}
+		wF := total - wB
+		if wF == 0 {
+			break
+		}
+		sumB += float64(t) * float64(h[t])
+		mB := sumB / float64(wB)
+		mF := (sum - sumB) / float64(wF)
+		between := float64(wB) * float64(wF) * (mB - mF) * (mB - mF)
+		if between > maxVar {
+			maxVar = between
+			best = t
+		}
+	}
+	return uint8(best)
+}
+
+// Threshold binarises src by its Rec. 601 luminance into dst: pixels whose
+// luminance is strictly greater than t become white (255,255,255), the rest
+// black (0,0,0). Alpha is preserved. dst and src are RGBA slices of equal
+// length.
+func Threshold(dst, src []uint8, t uint8) {
+	for i := 0; i < len(src); i += 4 {
+		y := ClampByte(0.299*float64(src[i]) + 0.587*float64(src[i+1]) + 0.114*float64(src[i+2]))
+		var v uint8
+		if y > t {
+			v = 255
+		}
+		dst[i] = v
+		dst[i+1] = v
+		dst[i+2] = v
+		dst[i+3] = src[i+3]
+	}
+}
+
+// RGBToHSV converts the R, G, B channels of src to H, S, V, writing each as a
+// byte into dst: H is the hue scaled from [0,360) to [0,255] (hue*255/360,
+// rounded), S and V are scaled from [0,1] to [0,255]. Alpha is preserved. This
+// byte-encoded HSV is a lossy but reversible-within-rounding representation
+// convenient for an RGBA-backed pipeline.
+func RGBToHSV(dst, src []uint8) {
+	for i := 0; i < len(src); i += 4 {
+		r := float64(src[i]) / 255
+		g := float64(src[i+1]) / 255
+		b := float64(src[i+2]) / 255
+		max := r
+		if g > max {
+			max = g
+		}
+		if b > max {
+			max = b
+		}
+		min := r
+		if g < min {
+			min = g
+		}
+		if b < min {
+			min = b
+		}
+		v := max
+		delta := max - min
+		var s float64
+		if max > 0 {
+			s = delta / max
+		}
+		var hue float64
+		if delta > 0 {
+			switch max {
+			case r:
+				hue = (g - b) / delta
+			case g:
+				hue = 2 + (b-r)/delta
+			default:
+				hue = 4 + (r-g)/delta
+			}
+			hue *= 60
+			if hue < 0 {
+				hue += 360
+			}
+		}
+		dst[i] = ClampByte(hue * 255 / 360)
+		dst[i+1] = ClampByte(s * 255)
+		dst[i+2] = ClampByte(v * 255)
+		dst[i+3] = src[i+3]
+	}
+}
+
+// HSVToRGB is the inverse of RGBToHSV: it interprets the first three channels of
+// src as byte-encoded H, S, V (H in [0,255] mapping to [0,360), S and V in
+// [0,255] mapping to [0,1]) and writes R, G, B into dst. Alpha is preserved.
+func HSVToRGB(dst, src []uint8) {
+	for i := 0; i < len(src); i += 4 {
+		h := float64(src[i]) / 255 * 360
+		s := float64(src[i+1]) / 255
+		v := float64(src[i+2]) / 255
+		c := v * s
+		hp := h / 60
+		x := c * (1 - math.Abs(math.Mod(hp, 2)-1))
+		var r, g, b float64
+		switch int(hp) % 6 {
+		case 0:
+			r, g, b = c, x, 0
+		case 1:
+			r, g, b = x, c, 0
+		case 2:
+			r, g, b = 0, c, x
+		case 3:
+			r, g, b = 0, x, c
+		case 4:
+			r, g, b = x, 0, c
+		default:
+			r, g, b = c, 0, x
+		}
+		m := v - c
+		dst[i] = ClampByte((r + m) * 255)
+		dst[i+1] = ClampByte((g + m) * 255)
+		dst[i+2] = ClampByte((b + m) * 255)
+		dst[i+3] = src[i+3]
+	}
+}
+
+// FlipH mirrors src left-to-right (column x maps to width-1-x), writing the
+// result into dst. Both are RGBA slices of width*height pixels. This matches
+// numpy.fliplr on a height-by-width-by-4 array.
+func FlipH(dst, src []uint8, width, height int) {
+	for y := 0; y < height; y++ {
+		row := y * width * 4
+		for x := 0; x < width; x++ {
+			si := row + x*4
+			di := row + (width-1-x)*4
+			copyPixel(dst, di, src, si)
+		}
+	}
+}
+
+// FlipV mirrors src top-to-bottom (row y maps to height-1-y), writing the
+// result into dst. This matches numpy.flipud.
+func FlipV(dst, src []uint8, width, height int) {
+	rowBytes := width * 4
+	for y := 0; y < height; y++ {
+		copy(dst[(height-1-y)*rowBytes:(height-1-y)*rowBytes+rowBytes], src[y*rowBytes:y*rowBytes+rowBytes])
+	}
+}
+
+// Rotate90 writes src rotated 90 degrees counter-clockwise into dst. The source
+// is width*height; the destination is height*width. Source pixel (x, y) maps to
+// destination (y, width-1-x), matching numpy.rot90 (k=1).
+func Rotate90(dst, src []uint8, width, height int) {
+	dstW := height
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			si := (y*width + x) * 4
+			dx := y
+			dy := width - 1 - x
+			di := (dy*dstW + dx) * 4
+			copyPixel(dst, di, src, si)
+		}
+	}
+}
+
+// Rotate180 writes src rotated 180 degrees into dst. Source pixel (x, y) maps to
+// destination (width-1-x, height-1-y). Both are width*height.
+func Rotate180(dst, src []uint8, width, height int) {
+	n := width * height
+	for i := 0; i < n; i++ {
+		copyPixel(dst, (n-1-i)*4, src, i*4)
+	}
+}
+
+// Rotate270 writes src rotated 90 degrees clockwise (270 CCW) into dst. The
+// source is width*height; the destination is height*width. Source pixel (x, y)
+// maps to destination (height-1-y, x), matching numpy.rot90 (k=3).
+func Rotate270(dst, src []uint8, width, height int) {
+	dstW := height
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			si := (y*width + x) * 4
+			dx := height - 1 - y
+			dy := x
+			di := (dy*dstW + dx) * 4
+			copyPixel(dst, di, src, si)
+		}
+	}
+}
+
+// Crop copies the rectangle of size cw*ch whose top-left corner is at (ox, oy)
+// in the width*height source into dst (a cw*ch RGBA slice). The caller is
+// responsible for validating that the rectangle lies within the source.
+func Crop(dst, src []uint8, width, ox, oy, cw, ch int) {
+	for y := 0; y < ch; y++ {
+		srcRow := ((oy+y)*width + ox) * 4
+		dstRow := (y * cw) * 4
+		copy(dst[dstRow:dstRow+cw*4], src[srcRow:srcRow+cw*4])
+	}
+}
+
+// copyPixel copies the four RGBA bytes at src[si:] into dst[di:].
+func copyPixel(dst []uint8, di int, src []uint8, si int) {
+	dst[di] = src[si]
+	dst[di+1] = src[si+1]
+	dst[di+2] = src[si+2]
+	dst[di+3] = src[si+3]
 }
 
 // ResizeNearest scales a width*height source image into a dstW*dstH destination
