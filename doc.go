@@ -21,9 +21,14 @@
 // bilinear), Convolve (arbitrary odd-sized kernels with edge clamping),
 // GaussianBlur (separable), AdjustBrightness and AdjustContrast.
 //
-// Phase 1 adds Sobel edge detection (Sobel gradient magnitude, SobelX/SobelY
-// directional responses); BoxBlur (separable running-sum mean, matching
-// scipy.ndimage.uniform_filter); the geometric transforms FlipHorizontal,
+// Phase 1 adds edge detection — Sobel (gradient magnitude) with SobelX/SobelY
+// directional responses, the normalised Prewitt, Scharr and SobelMag operators
+// and the Laplacian (matching skimage.filters.{prewitt,scharr,sobel,laplace}),
+// and the full Canny detector (Gaussian, Sobel, bilinear non-maximum
+// suppression, hysteresis); the filters BoxBlur (separable running-sum mean,
+// matching scipy.ndimage.uniform_filter), Median (square median, matching
+// scipy.ndimage.median_filter), and UnsharpMask/Sharpen (matching
+// skimage.filters.unsharp_mask); the geometric transforms FlipHorizontal,
 // FlipVertical, Rotate90/Rotate180/Rotate270 (numpy.fliplr/flipud/rot90) and
 // Crop; the colour conversions RGBToHSV/HSVToRGB; and thresholding via
 // OtsuThreshold/Threshold/Otsu (matching skimage.filters.threshold_otsu).

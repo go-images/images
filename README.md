@@ -66,8 +66,17 @@ Filters:
 - `images.Convolve(img, images.Kernel{...})` — arbitrary odd kernel, clamp-to-edge
 - `images.GaussianBlur(img, sigma)` — separable Gaussian
 - `images.BoxBlur(img, radius)` — separable running-sum mean (matches `scipy.ndimage.uniform_filter`)
-- `images.Sobel(img)` — gradient-magnitude edge map (on luminance)
+- `images.Median(img, radius)` — square median (matches `scipy.ndimage.median_filter`, `mode="nearest"`)
+- `images.UnsharpMask(img, radius, amount)` — sharpen via `src + amount*(src − blur)` (matches `skimage.filters.unsharp_mask`)
+- `images.Sharpen(img)` — `UnsharpMask(img, 1.0, 1.0)`
+
+Edges:
+
+- `images.Sobel(img)` — gradient-magnitude edge map (classic integer kernels, on luminance)
 - `images.SobelX(img)` / `images.SobelY(img)` — directional Sobel responses (mid-grey = zero gradient)
+- `images.Prewitt(img)` / `images.Scharr(img)` / `images.SobelMag(img)` — normalised gradient magnitude (match `skimage.filters.{prewitt,scharr,sobel}`)
+- `images.Laplacian(img)` — discrete Laplacian (matches `skimage.filters.laplace`, ksize 3)
+- `images.Canny(img, sigma, low, high)` — binary Canny edge map (Gaussian → Sobel → bilinear NMS → hysteresis)
 
 Morphology (grayscale square element, also binary on 0/255 images):
 
@@ -103,7 +112,9 @@ if err := images.Save("out.png", blurred); err != nil {
 On a 512×512 image (arm64 Linux, same VM for both stacks), the SIMD + multicore
 kernels **beat scikit-image / SciPy across the board** — box blur **12.6×**,
 Sobel **7.8×**, Gaussian **3.8×**, erode **6.7×**, dilate **7.4×** faster than
-NumPy's single-threaded compiled C. The former Gaussian and morphology losses
+NumPy's single-threaded compiled C. The newer Phase-1 ops win on multicore alone
+(no SIMD inner loop yet) — median **5.7×**, Scharr **2.7×**, Canny **2.7×**. The
+former Gaussian and morphology losses
 (~1.1× behind, when the kernels were scalar) are now decisive wins. Box blur and
 grayscale morphology match SciPy bit-for-bit; Gaussian matches within one LSB,
 and every SIMD kernel is validated against its scalar oracle. See

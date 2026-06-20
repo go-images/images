@@ -95,8 +95,21 @@ shape that maps onto vector registers.
 - **Colour & threshold (DONE)** — `RGBToHSV`/`HSVToRGB` (byte-encoded,
   round-trip stable), `OtsuThreshold` (matches `skimage.filters.threshold_otsu`)
   and `Threshold`/`Otsu`.
-- Sharpen/unsharp-mask, Prewitt/Scharr/Laplacian, Canny, emboss.
-- Median and bilateral filters.
+- **Edge operators (DONE)** — `Prewitt`, `Scharr` and `SobelMag` (normalised
+  separable gradient magnitude, `sqrt((gx²+gy²)/2)` on luminance in [0,1]) and
+  `Laplacian` (discrete `[0,-1,0;-1,4,-1;0,-1,0]`). Match
+  `skimage.filters.{prewitt,scharr,sobel,laplace}` bit-for-bit on the VM (a
+  3-tap kernel makes clamp-to-edge equal skimage's reflect border).
+- **Canny (DONE)** — `Canny(sigma, low, high)`: Gaussian-smoothed luminance →
+  Sobel gradients → bilinear non-maximum suppression → 8-connected hysteresis,
+  mirroring `skimage.feature.canny`. ~98% interior agreement vs skimage
+  (mode=nearest); the residual is skimage's masked constant-border preprocessing
+  vs the library's cleaner clamp-to-edge.
+- **Median + unsharp (DONE)** — `Median` (square median via 256-bin counting
+  selection, matches `scipy.ndimage.median_filter` `mode="nearest"` bit-for-bit)
+  and `UnsharpMask`/`Sharpen` (`src + amount*(src − blur)`, matches
+  `skimage.filters.unsharp_mask`'s formula exactly within rounding).
+- Bilateral filter; emboss.
 - Arbitrary-angle rotate, affine/warp; bicubic resize.
 - Colour adjustments: gamma, channel mixing, RGB↔Lab, histogram equalisation.
 - Configurable edge handling (clamp / wrap / reflect / constant).

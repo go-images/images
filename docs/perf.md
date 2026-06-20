@@ -63,6 +63,28 @@ whole op is validated against SciPy.
 | **Erode** (r=2)         |           13,865,054 |           1,581,921 |           10,559,638 | **6.7× faster** |
 | **Dilate** (r=2)        |           12,898,691 |           1,482,165 |           11,025,974 | **7.4× faster** |
 
+### Phase 1 edge / filter additions — 512×512 (arm64 Linux, lower is better)
+
+These are the newer multicore (scalar-inner-loop) ops, benchmarked on the same
+VM against the matched scikit-image / SciPy reference. They have no SIMD inner
+loop yet — the win is the multicore fan-out plus a cheaper algorithm (counting
+selection for the median) — and they already beat scikit-image:
+
+| Operation               | go-images (ns/op) | scikit-image / SciPy (ns/op) | Speed-up |
+|-------------------------|------------------:|-----------------------------:|---------:|
+| **Scharr** (magnitude)  |         1,421,773 |                    3,833,147 | **2.7× faster** |
+| **Canny** (σ=1)         |        10,086,768 |                   27,031,572 | **2.7× faster** |
+| **Median** (r=2, 5×5)   |        37,565,475 |                  214,597,360 | **5.7× faster** |
+
+Matched semantics: Scharr ⇔ `skimage.filters.scharr` on the luminance plane;
+Canny ⇔ `skimage.feature.canny(sigma=1, low=20, high=40)`; Median ⇔
+`scipy.ndimage.median_filter(size=5, mode="nearest")` per channel. Prewitt and
+SobelMag share Scharr's kernel; UnsharpMask/Sharpen are GaussianBlur plus a
+fused per-pixel add (Gaussian's numbers above apply). The median's large lead is
+the O(window+256) counting selection vs SciPy's general n-D median, widened by
+the multicore tiling. Adding a SIMD Sobel-gradient kernel (shared by the edge
+family and Canny) is the next vectorisation target.
+
 The "before" column is the scalar single-threaded kernel; "after" is SIMD +
 4-core. **Both former losses are now wins:** Gaussian goes from 0.92× (1.08×
 slower) to **3.8× faster**, and Erode/Dilate from ~0.9× to **6.7×/7.4×
@@ -133,7 +155,7 @@ parallel thresholds (`separable_test.go`).
 # On the arm64 debian VM, with the repo synced to /tmp/goimages:
 cd /tmp/goimages
 GOWORK=off /usr/local/go/bin/go test -run=^$ \
-  -bench 'BoxBlur|GaussianBlur|Sobel$|Erode|Dilate' -benchtime=2s ./...
+  -bench 'BoxBlur|GaussianBlur|Sobel$|Erode|Dilate|Scharr|Canny|Median' -benchtime=2s ./...
 
 # scikit-image / SciPy side (see the harness used to produce the table):
 python3 skbench.py      # timings
