@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-images.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
-[![Status](https://img.shields.io/badge/status-phase%201-9a6700)](docs/plan-images.md)
+[![Status](https://img.shields.io/badge/status-phase%202-9a6700)](docs/plan-images.md)
 
 **A pure-Go (no cgo) image-processing library** in the style of
 [scikit-image](https://scikit-image.org/), built entirely on the Go standard
@@ -50,15 +50,35 @@ Conversion and I/O:
 
 Operations (each returns a new `*image.RGBA`):
 
+Point & colour:
+
 - `images.Grayscale(img)` — luminance-weighted (Rec. 601)
 - `images.Invert(img)`
 - `images.AdjustBrightness(img, delta)` — clamped to `[0, 255]`
 - `images.AdjustContrast(img, factor)` — about mid-point 128, clamped
-- `images.Resize(img, w, h, mode)` — `images.NearestNeighbor` or `images.Bilinear`
+- `images.RGBToHSV(img)` / `images.HSVToRGB(img)` — byte-encoded, round-trip-stable
+- `images.OtsuThreshold(img)` — Otsu level (matches `skimage.filters.threshold_otsu`)
+- `images.Threshold(img, t)` / `images.Otsu(img)` — binarise on luminance
+
+Filters:
+
 - `images.Convolve(img, images.Kernel{...})` — arbitrary odd kernel, clamp-to-edge
 - `images.GaussianBlur(img, sigma)` — separable Gaussian
+- `images.BoxBlur(img, radius)` — separable running-sum mean (matches `scipy.ndimage.uniform_filter`)
 - `images.Sobel(img)` — gradient-magnitude edge map (on luminance)
 - `images.SobelX(img)` / `images.SobelY(img)` — directional Sobel responses (mid-grey = zero gradient)
+
+Morphology (grayscale square element, also binary on 0/255 images):
+
+- `images.Erode(img, r)` / `images.Dilate(img, r)` — local min / max
+- `images.Open(img, r)` / `images.Close(img, r)` — erode→dilate / dilate→erode
+
+Geometry:
+
+- `images.Resize(img, w, h, mode)` — `images.NearestNeighbor` or `images.Bilinear`
+- `images.FlipHorizontal(img)` / `images.FlipVertical(img)` — `numpy.fliplr` / `flipud`
+- `images.Rotate90(img)` / `images.Rotate180(img)` / `images.Rotate270(img)` — `numpy.rot90`
+- `images.Crop(img, image.Rect(x0, y0, x1, y1))`
 
 ### Example
 
@@ -76,6 +96,16 @@ if err := images.Save("out.png", blurred); err != nil {
     log.Fatal(err)
 }
 ```
+
+## Performance
+
+On a 512×512 image (arm64 Linux, same VM for both stacks), the scalar pure-Go
+kernels already **beat scikit-image / SciPy on the separable hot ops** — box
+blur **3.1×** and Sobel **3.2×** faster — while the arithmetic-heavy Gaussian
+and morphology kernels are ~1.1× behind NumPy's compiled C (the targets for the
+planned go-asmgen SIMD + multicore work). Box blur and grayscale morphology
+match SciPy bit-for-bit; Gaussian matches within one LSB. See
+[docs/perf.md](docs/perf.md) for the full method, tables and correctness checks.
 
 ## License
 

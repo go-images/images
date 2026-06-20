@@ -19,7 +19,20 @@
 //
 // Phase 0 implements Grayscale, Invert, Resize (nearest-neighbour and
 // bilinear), Convolve (arbitrary odd-sized kernels with edge clamping),
-// GaussianBlur (separable), AdjustBrightness and AdjustContrast. Phase 1 adds
-// Sobel edge detection: Sobel (gradient magnitude), SobelX and SobelY
-// (directional responses).
+// GaussianBlur (separable), AdjustBrightness and AdjustContrast.
+//
+// Phase 1 adds Sobel edge detection (Sobel gradient magnitude, SobelX/SobelY
+// directional responses); BoxBlur (separable running-sum mean, matching
+// scipy.ndimage.uniform_filter); the geometric transforms FlipHorizontal,
+// FlipVertical, Rotate90/Rotate180/Rotate270 (numpy.fliplr/flipud/rot90) and
+// Crop; the colour conversions RGBToHSV/HSVToRGB; and thresholding via
+// OtsuThreshold/Threshold/Otsu (matching skimage.filters.threshold_otsu).
+//
+// Phase 2 adds grayscale morphology over a square structuring element: Erode
+// and Dilate (per-channel local min/max, matching scipy.ndimage.grey_erosion
+// and grey_dilation) and the derived Open and Close. On binary 0/255 images
+// these reduce to ordinary binary morphology.
+//
+// docs/perf.md reports honest go-images-vs-scikit-image/SciPy benchmarks and
+// correctness checks for the hot operations.
 package images

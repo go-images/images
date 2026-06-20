@@ -85,18 +85,36 @@ shape that maps onto vector registers.
   gradient/magnitude pass is fused with unrolled kernel taps; a benchmark
   compares it to an unfused two-pass baseline and a differential test pins it to
   an independent naive reference.
-- Sharpen/unsharp-mask, Prewitt edge detection, emboss.
+- **Box blur (DONE)** — `BoxBlur`, separable running-sum (O(1) per pixel in the
+  radius), float intermediate so the two passes compose to the exact 2-D mean;
+  matches `scipy.ndimage.uniform_filter` (mode=nearest) bit-for-bit. Validated
+  against an independent naive oracle and against SciPy on the VM.
+- **Geometric transforms (DONE)** — `FlipHorizontal`/`FlipVertical`
+  (numpy.fliplr/flipud), `Rotate90`/`Rotate180`/`Rotate270` (numpy.rot90) and
+  `Crop`. Exact pixel rearrangements, no interpolation.
+- **Colour & threshold (DONE)** — `RGBToHSV`/`HSVToRGB` (byte-encoded,
+  round-trip stable), `OtsuThreshold` (matches `skimage.filters.threshold_otsu`)
+  and `Threshold`/`Otsu`.
+- Sharpen/unsharp-mask, Prewitt/Scharr/Laplacian, Canny, emboss.
 - Median and bilateral filters.
-- Box blur (sliding-window O(1) per pixel).
-- Geometric transforms: flip, rotate (90°/arbitrary), crop, affine/warp.
-- Colour adjustments: gamma, saturation/HSV, channel mixing, threshold.
+- Arbitrary-angle rotate, affine/warp; bicubic resize.
+- Colour adjustments: gamma, channel mixing, RGB↔Lab, histogram equalisation.
 - Configurable edge handling (clamp / wrap / reflect / constant).
 
 ### Phase 2 — morphology & analysis
 
-- Binary and grayscale morphology (erode, dilate, open, close).
+- **Grayscale morphology (DONE)** — `Erode`/`Dilate` (separable per-channel
+  local min/max over a square element, matching `scipy.ndimage.grey_erosion`/
+  `grey_dilation` bit-for-bit) and the derived `Open`/`Close`. Binary on 0/255.
 - Connected components, labelling, region properties.
-- Histograms and histogram equalisation.
+- Histograms (`kernels.Histogram` exists) and histogram equalisation.
+
+### Performance
+
+`docs/perf.md` tracks honest go-images-vs-scikit-image/SciPy benchmarks on the
+arm64 Linux VM. The scalar pure-Go kernels already beat SciPy on the separable
+hot ops (box blur 3.1×, Sobel 3.2×); Gaussian and morphology are ~1.1× behind
+NumPy's compiled C and are the first targets for the Phase 3 SIMD work.
 
 ### Phase 3 — SIMD kernels via go-asmgen
 
