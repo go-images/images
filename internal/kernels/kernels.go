@@ -78,6 +78,27 @@ func AdjustContrast(dst, src []uint8, factor float64) {
 	}
 }
 
+// inRangeSpan returns the half-open span [lo,hi) of destination indices x in
+// [0,width) for which the shifted source index x+t lies in range [0,width). For
+// t < 0 the leftmost -t columns read before the start; for t > 0 the rightmost t
+// read past the end; those border columns are handled by clamping. The result is
+// itself clamped to [0,width] with lo <= hi, so a shift larger than the line
+// width (|t| >= width, where every column is a border) yields an empty span.
+func inRangeSpan(t, width int) (lo, hi int) {
+	if t < 0 {
+		lo = -t
+		if lo > width { // shift larger than the line: every column is a border
+			lo = width
+		}
+		return lo, width
+	}
+	hi = width - t
+	if hi < 0 {
+		hi = 0
+	}
+	return 0, hi
+}
+
 // clampIndex clamps i to [0, n).
 func clampIndex(i, n int) int {
 	if i < 0 {
@@ -145,44 +166,138 @@ func GaussianKernel1D(sigma float64) []float64 {
 // into dst via the scratch buffer tmp. src, tmp and dst are RGBA pixel slices
 // of width*height pixels and must be distinct. Edges use clamp-to-edge
 // addressing; alpha is preserved.
+//
+// The implementation deinterleaves the R, G and B channels into contiguous
+// float64 planes so each pass is a multiply-accumulate over a flat array — the
+// shape the SIMD axpy kernel (dst[i] += w*src[i]) vectorises — and fans the
+// independent rows/columns out across cores above ParThreshold. The intermediate
+// result is still rounded to bytes between the two passes (tmp), exactly as the
+// former scalar implementation did, so the numeric output is unchanged. The
+// per-tap accumulation order (kernel tap by kernel tap, over a whole line) is
+// the same order the scalar oracle uses, so on amd64-v1 and arm64 the result is
+// bit-identical to the scalar reference and the box-blur/Gaussian correctness
+// tests continue to hold.
 func ConvolveSeparable(dst, tmp, src []uint8, width, height int, k []float64) {
 	radius := len(k) / 2
-	// Horizontal pass: src -> tmp.
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			var sr, sg, sb float64
-			for i := -radius; i <= radius; i++ {
-				sx := clampIndex(x+i, width)
-				w := k[i+radius]
-				si := (y*width + sx) * 4
-				sr += w * float64(src[si])
-				sg += w * float64(src[si+1])
-				sb += w * float64(src[si+2])
-			}
-			di := (y*width + x) * 4
-			tmp[di] = ClampByte(sr)
-			tmp[di+1] = ClampByte(sg)
-			tmp[di+2] = ClampByte(sb)
+	n := width * height
+	// Horizontal pass: src bytes -> per-channel byte planes (clamped), carried
+	// in tmp as RGBA so alpha rides along unchanged.
+	hr := make([]float64, n)
+	hg := make([]float64, n)
+	hb := make([]float64, n)
+	forLines(height, width, func(lo, hi int) {
+		convH(hr, hg, hb, src, width, lo, hi, k, radius)
+	})
+	// Round the horizontal result into tmp (bytes), copying alpha from src.
+	forLines(height, width, func(lo, hi int) {
+		for i := lo * width; i < hi*width; i++ {
+			di := i * 4
+			tmp[di] = ClampByte(hr[i])
+			tmp[di+1] = ClampByte(hg[i])
+			tmp[di+2] = ClampByte(hb[i])
 			tmp[di+3] = src[di+3]
 		}
-	}
-	// Vertical pass: tmp -> dst.
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			var sr, sg, sb float64
-			for i := -radius; i <= radius; i++ {
-				sy := clampIndex(y+i, height)
-				w := k[i+radius]
-				si := (sy*width + x) * 4
-				sr += w * float64(tmp[si])
-				sg += w * float64(tmp[si+1])
-				sb += w * float64(tmp[si+2])
-			}
-			di := (y*width + x) * 4
-			dst[di] = ClampByte(sr)
-			dst[di+1] = ClampByte(sg)
-			dst[di+2] = ClampByte(sb)
+	})
+	// Vertical pass: tmp bytes -> per-channel float planes -> dst bytes.
+	vr := make([]float64, n)
+	vg := make([]float64, n)
+	vb := make([]float64, n)
+	forLines(height, width, func(lo, hi int) {
+		convV(vr, vg, vb, tmp, width, height, lo, hi, k, radius)
+	})
+	forLines(height, width, func(lo, hi int) {
+		for i := lo * width; i < hi*width; i++ {
+			di := i * 4
+			dst[di] = ClampByte(vr[i])
+			dst[di+1] = ClampByte(vg[i])
+			dst[di+2] = ClampByte(vb[i])
 			dst[di+3] = tmp[di+3]
+		}
+	})
+}
+
+// convH runs the horizontal convolution for rows [lo,hi) of an RGBA image,
+// writing per-channel float accumulators into hr/hg/hb. For each kernel tap the
+// in-range columns are accumulated as a contiguous SIMD axpy over the row; the
+// few columns whose source index is clamped at a border are handled with a
+// scalar add, so the result matches the scalar oracle exactly.
+func convH(hr, hg, hb []float64, src []uint8, width, lo, hi int, k []float64, radius int) {
+	rr := make([]float64, width)
+	rg := make([]float64, width)
+	rb := make([]float64, width)
+	for y := lo; y < hi; y++ {
+		base := y * width * 4
+		// Deinterleave this row's R, G, B into contiguous float scratch.
+		for x := 0; x < width; x++ {
+			p := base + x*4
+			rr[x] = float64(src[p])
+			rg[x] = float64(src[p+1])
+			rb[x] = float64(src[p+2])
+		}
+		out := y * width
+		ar := hr[out : out+width]
+		ag := hg[out : out+width]
+		ab := hb[out : out+width]
+		for i := range ar {
+			ar[i], ag[i], ab[i] = 0, 0, 0
+		}
+		for t := -radius; t <= radius; t++ {
+			w := k[t+radius]
+			// Destination column x reads source column x+t. Over the in-range
+			// span the read is a contiguous shift, so axpy applies; the clamped
+			// border columns are added scalar.
+			loX, hiX := inRangeSpan(t, width)
+			// Border-clamped left columns (x+t < 0 -> src col 0).
+			for x := 0; x < loX; x++ {
+				ar[x] += w * rr[0]
+				ag[x] += w * rg[0]
+				ab[x] += w * rb[0]
+			}
+			// Border-clamped right columns (x+t >= width -> src col width-1).
+			for x := hiX; x < width; x++ {
+				ar[x] += w * rr[width-1]
+				ag[x] += w * rg[width-1]
+				ab[x] += w * rb[width-1]
+			}
+			if hiX > loX {
+				axpy(ar[loX:hiX], rr[loX+t:hiX+t], w)
+				axpy(ag[loX:hiX], rg[loX+t:hiX+t], w)
+				axpy(ab[loX:hiX], rb[loX+t:hiX+t], w)
+			}
+		}
+	}
+}
+
+// convV runs the vertical convolution for output rows [lo,hi), reading the
+// byte-rounded horizontal result from the RGBA buffer mid and writing
+// per-channel float accumulators into vr/vg/vb. Each kernel tap adds w times a
+// whole (clamped) source row — a contiguous SIMD axpy of width elements — so the
+// border handling collapses to choosing which source row to read.
+func convV(vr, vg, vb []float64, mid []uint8, width, height, lo, hi int, k []float64, radius int) {
+	rowR := make([]float64, width)
+	rowG := make([]float64, width)
+	rowB := make([]float64, width)
+	for y := lo; y < hi; y++ {
+		out := y * width
+		ar := vr[out : out+width]
+		ag := vg[out : out+width]
+		ab := vb[out : out+width]
+		for i := range ar {
+			ar[i], ag[i], ab[i] = 0, 0, 0
+		}
+		for t := -radius; t <= radius; t++ {
+			w := k[t+radius]
+			sy := clampIndex(y+t, height)
+			base := sy * width * 4
+			for x := 0; x < width; x++ {
+				p := base + x*4
+				rowR[x] = float64(mid[p])
+				rowG[x] = float64(mid[p+1])
+				rowB[x] = float64(mid[p+2])
+			}
+			axpy(ar, rowR, w)
+			axpy(ag, rowG, w)
+			axpy(ab, rowB, w)
 		}
 	}
 }
@@ -204,16 +319,18 @@ func BoxBlur(dst, src []uint8, width, height, radius int) {
 	// mid holds the horizontal-pass result as floats: three channels per pixel,
 	// already divided by the window width, ready for the vertical pass.
 	mid := make([]float64, width*height*3)
-	// Horizontal pass: src bytes -> mid floats.
-	for y := 0; y < height; y++ {
-		rowSrc := y * width * 4
-		rowMid := y * width * 3
-		boxBlurH(mid, src, rowMid, rowSrc, width, radius, inv)
-	}
-	// Vertical pass: mid floats -> dst bytes, with alpha copied from src.
-	for x := 0; x < width; x++ {
-		boxBlurV(dst, mid, src, x, width, height, radius, inv)
-	}
+	// Horizontal pass: src bytes -> mid floats (rows independent, tiled).
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			boxBlurH(mid, src, y*width*3, y*width*4, width, radius, inv)
+		}
+	})
+	// Vertical pass: mid floats -> dst bytes (columns independent, tiled).
+	forLines(width, height, func(lo, hi int) {
+		for x := lo; x < hi; x++ {
+			boxBlurV(dst, mid, src, x, width, height, radius, inv)
+		}
+	})
 }
 
 // boxBlurH runs the horizontal moving-average over one row of `n` pixels read
@@ -333,17 +450,19 @@ func sobelGradients(lum []float64, width, height, x, y int) (gx, gy float64) {
 // clamp-to-edge addressing. src and dst are RGBA slices of width*height pixels.
 func Sobel(dst, src []uint8, width, height int) {
 	lum := lumaPlane(src, width, height)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			gx, gy := sobelGradients(lum, width, height, x, y)
-			m := ClampByte(math.Sqrt(gx*gx + gy*gy))
-			di := (y*width + x) * 4
-			dst[di] = m
-			dst[di+1] = m
-			dst[di+2] = m
-			dst[di+3] = src[di+3]
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			for x := 0; x < width; x++ {
+				gx, gy := sobelGradients(lum, width, height, x, y)
+				m := ClampByte(math.Sqrt(gx*gx + gy*gy))
+				di := (y*width + x) * 4
+				dst[di] = m
+				dst[di+1] = m
+				dst[di+2] = m
+				dst[di+3] = src[di+3]
+			}
 		}
-	}
+	})
 }
 
 // SobelX writes the horizontal Sobel response of src into dst. The signed
@@ -365,21 +484,23 @@ func SobelY(dst, src []uint8, width, height int) {
 // SobelY (horizontal=false).
 func sobelDirectional(dst, src []uint8, width, height int, horizontal bool) {
 	lum := lumaPlane(src, width, height)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			gx, gy := sobelGradients(lum, width, height, x, y)
-			g := gy
-			if horizontal {
-				g = gx
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			for x := 0; x < width; x++ {
+				gx, gy := sobelGradients(lum, width, height, x, y)
+				g := gy
+				if horizontal {
+					g = gx
+				}
+				v := ClampByte(g/8 + 128)
+				di := (y*width + x) * 4
+				dst[di] = v
+				dst[di+1] = v
+				dst[di+2] = v
+				dst[di+3] = src[di+3]
 			}
-			v := ClampByte(g/8 + 128)
-			di := (y*width + x) * 4
-			dst[di] = v
-			dst[di+1] = v
-			dst[di+2] = v
-			dst[di+3] = src[di+3]
 		}
-	}
+	})
 }
 
 // morphOp selects the per-window reduction used by the separable morphology
@@ -407,61 +528,171 @@ func Dilate(dst, src []uint8, width, height, radius int) {
 	morph(dst, src, width, height, radius, morphMax)
 }
 
-// morph runs the separable grayscale morphology (erode or dilate) into dst via
-// an internal scratch buffer.
+// morph runs the separable grayscale morphology (erode or dilate) into dst.
+//
+// Like the separable convolution it deinterleaves the R, G and B channels into
+// contiguous float64 planes so each per-window reduction is an elementwise
+// min/max over a flat array — the shape the SIMD vminInto/vmaxInto kernel
+// (dst[i] = op(dst[i], src[i])) vectorises — and fans the independent rows /
+// columns out across cores above ParThreshold. The values are exact integers in
+// [0,255], so the float round-trip and the packed MIN/MAX are exact (no NaN or
+// signed-zero cases), and the per-tap reduction order matches the scalar oracle,
+// keeping the result bit-identical and the morphology tests holding.
 func morph(dst, src []uint8, width, height, radius int, op morphOp) {
 	tmp := make([]uint8, len(src))
-	// Horizontal pass: src -> tmp.
-	for y := 0; y < height; y++ {
-		row := y * width * 4
-		morph1D(tmp, src, row, 4, width, radius, op)
+	// Horizontal pass: src -> tmp (rows are independent).
+	forLines(height, width, func(lo, hi int) {
+		morphH(tmp, src, width, lo, hi, radius, op)
+	})
+	// Vertical pass: tmp -> dst (columns are independent; tile by column band).
+	forLines(width, height, func(lo, hi int) {
+		morphV(dst, tmp, width, height, lo, hi, radius, op)
+	})
+}
+
+// reduceInto applies the per-window reduction op (min for erosion, max for
+// dilation) elementwise: dst[i] = op(dst[i], src[i]), routing to the SIMD kernel.
+func reduceInto(dst, src []float64, op morphOp) {
+	if op == morphMax {
+		vmaxInto(dst, src)
+		return
 	}
-	// Vertical pass: tmp -> dst.
-	stride := width * 4
-	for x := 0; x < width; x++ {
-		morph1D(dst, tmp, x*4, stride, height, radius, op)
+	vminInto(dst, src)
+}
+
+// morphH runs the horizontal min/max for rows [lo,hi) of an RGBA image. For each
+// structuring-element offset the in-range columns are reduced as a contiguous
+// SIMD pass over the row; clamped border columns are reduced scalar, matching
+// the oracle exactly.
+func morphH(dst, src []uint8, width, lo, hi, radius int, op morphOp) {
+	rr := make([]float64, width)
+	rg := make([]float64, width)
+	rb := make([]float64, width)
+	ar := make([]float64, width)
+	ag := make([]float64, width)
+	ab := make([]float64, width)
+	for y := lo; y < hi; y++ {
+		base := y * width * 4
+		for x := 0; x < width; x++ {
+			p := base + x*4
+			rr[x] = float64(src[p])
+			rg[x] = float64(src[p+1])
+			rb[x] = float64(src[p+2])
+		}
+		morphLine(ar, ag, ab, rr, rg, rb, width, radius, op)
+		for x := 0; x < width; x++ {
+			p := base + x*4
+			dst[p] = uint8(ar[x])
+			dst[p+1] = uint8(ag[x])
+			dst[p+2] = uint8(ab[x])
+			dst[p+3] = src[p+3]
+		}
 	}
 }
 
-// morph1D runs one min/max pass over a single line of n pixels of src starting
-// at byte offset base with the given stride, writing the windowed per-channel
-// reduction into dst at the same positions. Out-of-range samples are clamped to
-// the line ends. Alpha is copied through unchanged.
-func morph1D(dst, src []uint8, base, stride, n, radius int, op morphOp) {
-	sample := func(i int) int {
-		if i < 0 {
-			i = 0
-		} else if i >= n {
-			i = n - 1
+// morphV runs the vertical min/max for columns [lo,hi). It deinterleaves the
+// column band into contiguous per-channel float planes (rows of width' = hi-lo),
+// reduces over the structuring element with the same contiguous SIMD pass, and
+// writes the result back. Working on the transposed band keeps every reduction
+// contiguous in memory.
+func morphV(dst, src []uint8, width, height, lo, hi, radius int, op morphOp) {
+	bw := hi - lo // band width (number of columns in this tile)
+	ar := make([]float64, bw)
+	ag := make([]float64, bw)
+	ab := make([]float64, bw)
+	gr := make([]float64, bw) // per-band gather scratch, reused across rows
+	gg := make([]float64, bw)
+	gb := make([]float64, bw)
+	for y := 0; y < height; y++ {
+		base := y * width * 4
+		morphColumn(ar, ag, ab, gr, gg, gb, src, width, height, lo, bw, y, radius, op)
+		for j := 0; j < bw; j++ {
+			p := base + (lo+j)*4
+			dst[p] = uint8(ar[j])
+			dst[p+1] = uint8(ag[j])
+			dst[p+2] = uint8(ab[j])
+			dst[p+3] = src[p+3]
 		}
-		return base + i*stride
 	}
-	reduce := func(acc, v uint8) uint8 {
-		if op == morphMax {
-			if v > acc {
-				return v
-			}
-			return acc
-		}
-		if v < acc {
-			return v
-		}
-		return acc
+}
+
+// morphLine computes the windowed min/max along one horizontal line of width
+// pixels held in rr/rg/rb, writing the result into ar/ag/ab. It initialises the
+// accumulators from the first structuring-element offset, then folds the rest in
+// tap order with reduceInto over the contiguous in-range span (clamped border
+// columns folded scalar), exactly matching the scalar oracle's ordering.
+func morphLine(ar, ag, ab, rr, rg, rb []float64, width, radius int, op morphOp) {
+	first := func(i int) int { return clampIndex(i-radius, width) }
+	for x := 0; x < width; x++ {
+		s := first(x)
+		ar[x], ag[x], ab[x] = rr[s], rg[s], rb[s]
 	}
-	for i := 0; i < n; i++ {
-		first := sample(i - radius)
-		ar, ag, ab := src[first], src[first+1], src[first+2]
-		for k := -radius + 1; k <= radius; k++ {
-			si := sample(i + k)
-			ar = reduce(ar, src[si])
-			ag = reduce(ag, src[si+1])
-			ab = reduce(ab, src[si+2])
+	for t := -radius + 1; t <= radius; t++ {
+		loX, hiX := inRangeSpan(t, width)
+		for x := 0; x < loX; x++ {
+			reduceScalar(ar, ag, ab, rr, rg, rb, x, 0, op)
 		}
-		di := base + i*stride
-		dst[di] = ar
-		dst[di+1] = ag
-		dst[di+2] = ab
-		dst[di+3] = src[base+i*stride+3]
+		for x := hiX; x < width; x++ {
+			reduceScalar(ar, ag, ab, rr, rg, rb, x, width-1, op)
+		}
+		if hiX > loX {
+			reduceInto(ar[loX:hiX], rr[loX+t:hiX+t], op)
+			reduceInto(ag[loX:hiX], rg[loX+t:hiX+t], op)
+			reduceInto(ab[loX:hiX], rb[loX+t:hiX+t], op)
+		}
+	}
+}
+
+// morphColumn computes the windowed min/max along the vertical structuring
+// element for output row y over the column band [lo,lo+bw), writing into
+// ar/ag/ab. Each tap gathers a (clamped) source row's band into contiguous
+// scratch and folds it with reduceInto, mirroring morphLine but along the
+// vertical axis.
+func morphColumn(ar, ag, ab, gr, gg, gb []float64, src []uint8, width, height, lo, bw, y, radius int, op morphOp) {
+	gather := func(sy int) {
+		base := sy * width * 4
+		for j := 0; j < bw; j++ {
+			p := base + (lo+j)*4
+			gr[j] = float64(src[p])
+			gg[j] = float64(src[p+1])
+			gb[j] = float64(src[p+2])
+		}
+	}
+	gather(clampIndex(y-radius, height))
+	copy(ar, gr)
+	copy(ag, gg)
+	copy(ab, gb)
+	for t := -radius + 1; t <= radius; t++ {
+		gather(clampIndex(y+t, height))
+		reduceInto(ar, gr, op)
+		reduceInto(ag, gg, op)
+		reduceInto(ab, gb, op)
+	}
+}
+
+// reduceScalar folds source column sx into accumulator column x for all three
+// channels, used for the clamped border columns of the horizontal pass.
+func reduceScalar(ar, ag, ab, rr, rg, rb []float64, x, sx int, op morphOp) {
+	if op == morphMax {
+		if rr[sx] > ar[x] {
+			ar[x] = rr[sx]
+		}
+		if rg[sx] > ag[x] {
+			ag[x] = rg[sx]
+		}
+		if rb[sx] > ab[x] {
+			ab[x] = rb[sx]
+		}
+		return
+	}
+	if rr[sx] < ar[x] {
+		ar[x] = rr[sx]
+	}
+	if rg[sx] < ag[x] {
+		ag[x] = rg[sx]
+	}
+	if rb[sx] < ab[x] {
+		ab[x] = rb[sx]
 	}
 }
 
