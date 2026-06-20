@@ -415,6 +415,47 @@ func lumaPlane(src []uint8, width, height int) []float64 {
 	return lum
 }
 
+// GaussianPlane returns the width*height luminance plane of src (Rec. 601),
+// smoothed by a separable Gaussian of standard deviation sigma with
+// clamp-to-edge borders. It is the pre-smoothing step of Canny: the smoothing
+// runs on the single luminance channel (as skimage.feature.canny does) rather
+// than on the three colour channels. The result stays in float64 [0,255] so the
+// subsequent Sobel gradients are computed without an intermediate byte rounding.
+func GaussianPlane(src []uint8, width, height int, sigma float64) []float64 {
+	lum := lumaPlane(src, width, height)
+	k := GaussianKernel1D(sigma)
+	radius := len(k) / 2
+	n := width * height
+	tmp := make([]float64, n)
+	// Horizontal pass: lum -> tmp.
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			row := y * width
+			for x := 0; x < width; x++ {
+				var s float64
+				for t := -radius; t <= radius; t++ {
+					s += k[t+radius] * lum[row+clampIndex(x+t, width)]
+				}
+				tmp[row+x] = s
+			}
+		}
+	})
+	// Vertical pass: tmp -> out.
+	out := make([]float64, n)
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			for x := 0; x < width; x++ {
+				var s float64
+				for t := -radius; t <= radius; t++ {
+					s += k[t+radius] * tmp[clampIndex(y+t, height)*width+x]
+				}
+				out[y*width+x] = s
+			}
+		}
+	})
+	return out
+}
+
 // sobelGradients computes, for the pixel at (x, y) of a width*height luminance
 // plane lum, the horizontal (gx) and vertical (gy) Sobel responses, using
 // clamp-to-edge addressing at the borders.
@@ -626,6 +667,157 @@ func Laplacian(dst, src []uint8, width, height int) {
 			}
 		}
 	})
+}
+
+// Canny detects edges with the Canny algorithm and writes a binary edge map
+// (white edges, black elsewhere) into dst. It mirrors the algorithm of
+// skimage.feature.canny: the already Gaussian-smoothed luminance plane lum is
+// run through the Sobel operator, thinned by non-maximum suppression, and linked
+// by hysteresis double-thresholding.
+//
+// The caller is responsible for the Gaussian pre-smoothing (the public Canny
+// applies GaussianBlur with clamp-to-edge borders first); lum is the smoothed
+// width*height luminance plane (one float64 per pixel, in [0,255]). lo and hi
+// are the absolute magnitude thresholds on the Sobel gradient norm. Borders use
+// clamp-to-edge addressing.
+//
+// Non-maximum suppression uses bilinear interpolation along the gradient
+// direction, exactly as skimage documents: the pixel is sorted into one of four
+// orientation categories by the signs and relative size of gx and gy, the two
+// magnitudes either side of it along the gradient normal are linearly
+// interpolated from the neighbouring pixels, and the pixel survives only if its
+// magnitude is strictly greater than both. Hysteresis then keeps every
+// suppressed pixel at or above hi, plus every pixel at or above lo that is
+// 8-connected (transitively) to such a strong pixel.
+func Canny(dst []uint8, lum []float64, width, height int, lo, hi float64) {
+	n := width * height
+	gx := make([]float64, n)
+	gy := make([]float64, n)
+	mag := make([]float64, n)
+	forLines(height, width, func(loY, hiY int) {
+		for y := loY; y < hiY; y++ {
+			for x := 0; x < width; x++ {
+				dx, dy := sobelGradients(lum, width, height, x, y)
+				i := y*width + x
+				gx[i] = dx
+				gy[i] = dy
+				mag[i] = math.Sqrt(dx*dx + dy*dy)
+			}
+		}
+	})
+	keep := cannySuppress(gx, gy, mag, width, height, lo)
+	cannyHysteresis(dst, keep, mag, width, height, hi)
+}
+
+// cannySuppress performs bilinear non-maximum suppression: it returns a boolean
+// plane marking every pixel that is a local maximum of mag along its gradient
+// direction and whose magnitude is >= lo. Border pixels (which lack a full
+// neighbourhood) are never kept, matching skimage's masking of the one-pixel
+// border.
+func cannySuppress(gx, gy, mag []float64, width, height int, lo float64) []bool {
+	keep := make([]bool, width*height)
+	forLines(height, width, func(loY, hiY int) {
+		for y := loY; y < hiY; y++ {
+			if y == 0 || y == height-1 {
+				continue
+			}
+			for x := 1; x < width-1; x++ {
+				i := y*width + x
+				m := mag[i]
+				if m < lo || m == 0 {
+					continue
+				}
+				if cannyIsMax(gx[i], gy[i], m, mag, width, x, y) {
+					keep[i] = true
+				}
+			}
+		}
+	})
+	return keep
+}
+
+// cannyIsMax reports whether the magnitude m of the pixel at (x,y) is strictly
+// greater than the two magnitudes interpolated either side of it along the
+// gradient normal. The pixel is classified into one of four octant-pair
+// categories by the signs and relative magnitude of (gx,gy); within a category
+// the off-axis weight w = min(|gx|,|gy|)/max(|gx|,|gy|) blends the axis-aligned
+// neighbour with the diagonal one, exactly as skimage's bilinear NMS does.
+func cannyIsMax(dx, dy, m float64, mag []float64, width, x, y int) bool {
+	at := func(xx, yy int) float64 { return mag[yy*width+xx] }
+	ax, ay := math.Abs(dx), math.Abs(dy)
+	var n1, n2 float64
+	if ax >= ay {
+		// Gradient closer to horizontal: interpolate between the horizontal
+		// neighbour and the diagonal one, weighted by ay/ax.
+		w := ay / ax
+		if dx*dy >= 0 {
+			// gx and gy same sign: diagonals are (x+1,y+1) and (x-1,y-1).
+			n1 = (1-w)*at(x+1, y) + w*at(x+1, y+1)
+			n2 = (1-w)*at(x-1, y) + w*at(x-1, y-1)
+		} else {
+			n1 = (1-w)*at(x+1, y) + w*at(x+1, y-1)
+			n2 = (1-w)*at(x-1, y) + w*at(x-1, y+1)
+		}
+	} else {
+		// Gradient closer to vertical: interpolate between the vertical
+		// neighbour and the diagonal one, weighted by ax/ay.
+		w := ax / ay
+		if dx*dy >= 0 {
+			n1 = (1-w)*at(x, y+1) + w*at(x+1, y+1)
+			n2 = (1-w)*at(x, y-1) + w*at(x-1, y-1)
+		} else {
+			n1 = (1-w)*at(x, y+1) + w*at(x-1, y+1)
+			n2 = (1-w)*at(x, y-1) + w*at(x+1, y-1)
+		}
+	}
+	return m > n1 && m > n2
+}
+
+// cannyHysteresis links the suppressed maxima into the final binary edge map.
+// Every kept pixel whose magnitude is >= hi is a confirmed edge and seeds a
+// flood fill over 8-connected kept pixels with magnitude >= lo (which the keep
+// plane already guarantees), so weak edges survive only when they connect to a
+// strong one. dst is written as an RGBA edge map: white (255,255,255,255) on
+// edges, opaque black elsewhere.
+func cannyHysteresis(dst []uint8, keep []bool, mag []float64, width, height int, hi float64) {
+	edge := make([]bool, width*height)
+	stack := make([]int, 0, 64)
+	for i, k := range keep {
+		if k && mag[i] >= hi && !edge[i] {
+			edge[i] = true
+			stack = append(stack, i)
+			// cannySuppress only ever marks strictly-interior pixels (it skips
+			// the one-pixel border), so every kept/seed pixel has x in
+			// [1,width-2] and y in [1,height-2] and all eight neighbours are
+			// valid indices: no bounds check is needed inside the flood fill.
+			for len(stack) > 0 {
+				p := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				px, py := p%width, p/width
+				for dy := -1; dy <= 1; dy++ {
+					ny := py + dy
+					for dx := -1; dx <= 1; dx++ {
+						q := ny*width + px + dx
+						if keep[q] && !edge[q] {
+							edge[q] = true
+							stack = append(stack, q)
+						}
+					}
+				}
+			}
+		}
+	}
+	for i, e := range edge {
+		di := i * 4
+		var v uint8
+		if e {
+			v = 255
+		}
+		dst[di] = v
+		dst[di+1] = v
+		dst[di+2] = v
+		dst[di+3] = 255
+	}
 }
 
 // morphOp selects the per-window reduction used by the separable morphology

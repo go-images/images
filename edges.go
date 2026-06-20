@@ -1,6 +1,7 @@
 package images
 
 import (
+	"fmt"
 	"image"
 
 	"github.com/go-images/images/internal/kernels"
@@ -45,6 +46,42 @@ func SobelMag(img image.Image) *image.RGBA {
 	dst := newLike(src)
 	kernels.SobelMag(dst.Pix, src.Pix, b.Dx(), b.Dy())
 	return dst
+}
+
+// Canny returns the binary Canny edge map of img: white (255,255,255) edges on
+// an opaque black background. It implements the classic Canny pipeline, matching
+// the algorithm of skimage.feature.canny:
+//
+//  1. smooth the Rec. 601 luminance with a Gaussian of standard deviation sigma
+//     (clamp-to-edge borders);
+//  2. estimate gradients with the Sobel operator; the edge strength is the
+//     gradient norm;
+//  3. thin to 1-pixel ridges by non-maximum suppression with bilinear
+//     interpolation along the gradient direction;
+//  4. link edges by hysteresis: keep every ridge pixel with magnitude >= high,
+//     plus every ridge pixel with magnitude >= low that is 8-connected to a kept
+//     one.
+//
+// low and high are absolute thresholds on the Sobel gradient magnitude (the
+// smoothed luminance is in [0,255], so the magnitudes are on that scale). It
+// returns an error if sigma is not positive, if either threshold is negative, or
+// if high < low.
+func Canny(img image.Image, sigma, low, high float64) (*image.RGBA, error) {
+	if sigma <= 0 {
+		return nil, fmt.Errorf("images: canny: sigma must be positive, got %g", sigma)
+	}
+	if low < 0 || high < 0 {
+		return nil, fmt.Errorf("images: canny: thresholds must be non-negative, got low=%g high=%g", low, high)
+	}
+	if high < low {
+		return nil, fmt.Errorf("images: canny: high threshold %g must be >= low threshold %g", high, low)
+	}
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := newLike(src)
+	smoothed := kernels.GaussianPlane(src.Pix, b.Dx(), b.Dy(), sigma)
+	kernels.Canny(dst.Pix, smoothed, b.Dx(), b.Dy(), low, high)
+	return dst, nil
 }
 
 // Laplacian returns the discrete Laplacian edge map of img, matching
