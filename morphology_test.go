@@ -151,6 +151,27 @@ func TestCloseFillsHole(t *testing.T) {
 	}
 }
 
+// BenchmarkErode and BenchmarkDilate measure the separable square-element
+// grayscale morphology at a realistic size, for comparison with
+// scipy.ndimage.grey_erosion/grey_dilation in docs/perf.md.
+func BenchmarkErode(b *testing.B) {
+	src := benchImage(512, 512)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = Erode(src, 2)
+	}
+}
+
+func BenchmarkDilate(b *testing.B) {
+	src := benchImage(512, 512)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = Dilate(src, 2)
+	}
+}
+
 func TestMorphologyBadRadius(t *testing.T) {
 	src := solid(3, 3, color.RGBA{1, 2, 3, 4})
 	for _, fn := range []struct {
