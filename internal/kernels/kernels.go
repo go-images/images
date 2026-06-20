@@ -669,6 +669,79 @@ func Laplacian(dst, src []uint8, width, height int) {
 	})
 }
 
+// Median applies a square median filter of the given radius to src, writing the
+// result into dst. Each output channel is the median of the (2*radius+1)^2
+// source neighbourhood (computed independently per R, G and B; alpha preserved),
+// with clamp-to-edge addressing. It matches scipy.ndimage.median_filter with a
+// (2*radius+1)-square footprint and mode="nearest". The window always holds an
+// odd number of samples, so the median is the unambiguous middle element.
+// Unlike a linear blur, the median removes salt-and-pepper noise while keeping
+// edges sharp. dst and src are RGBA slices of width*height pixels; radius >= 1.
+func Median(dst, src []uint8, width, height, radius int) {
+	win := 2*radius + 1
+	count := win * win
+	mid := count / 2
+	forLines(height, width, func(lo, hi int) {
+		// Per-worker scratch holding the window samples for one channel.
+		buf := make([]uint8, count)
+		for y := lo; y < hi; y++ {
+			for x := 0; x < width; x++ {
+				di := (y*width + x) * 4
+				for c := 0; c < 3; c++ {
+					n := 0
+					for dy := -radius; dy <= radius; dy++ {
+						sy := clampIndex(y+dy, height)
+						for dx := -radius; dx <= radius; dx++ {
+							sx := clampIndex(x+dx, width)
+							buf[n] = src[(sy*width+sx)*4+c]
+							n++
+						}
+					}
+					dst[di+c] = medianByte(buf, mid)
+				}
+				dst[di+3] = src[di+3]
+			}
+		}
+	})
+}
+
+// medianByte returns the element of buf that would sit at index mid if buf were
+// sorted ascending, using a 256-bin counting selection (the values are bytes).
+// This is O(n + 256) per window rather than O(n log n), and leaves buf intact.
+func medianByte(buf []uint8, mid int) uint8 {
+	var hist [256]int
+	for _, v := range buf {
+		hist[v]++
+	}
+	acc := 0
+	v := 0
+	for ; acc <= mid; v++ {
+		acc += hist[v]
+	}
+	// The loop advances v one past the bin that crossed mid; back up to it. The
+	// window count (2*mid+1) guarantees the threshold is crossed at some bin in
+	// [0,255], so v is always in range here.
+	return uint8(v - 1)
+}
+
+// UnsharpMask sharpens src by adding back a scaled high-pass detail layer:
+// dst = clamp(src + amount*(src - blurred)), where blurred is the Gaussian blur
+// of src (the caller supplies it). The R, G and B channels are processed
+// independently and alpha is preserved. This matches skimage.filters.unsharp_mask
+// (per channel): the blurred image is gaussian(src, sigma=radius); amount scales
+// the recovered detail (0 leaves the image unchanged, larger values sharpen more,
+// negative values soften). dst, src and blurred are RGBA slices of equal length.
+func UnsharpMask(dst, src, blurred []uint8, amount float64) {
+	for i := 0; i < len(src); i += 4 {
+		for c := 0; c < 3; c++ {
+			s := float64(src[i+c])
+			b := float64(blurred[i+c])
+			dst[i+c] = ClampByte(s + amount*(s-b))
+		}
+		dst[i+3] = src[i+3]
+	}
+}
+
 // Canny detects edges with the Canny algorithm and writes a binary edge map
 // (white edges, black elsewhere) into dst. It mirrors the algorithm of
 // skimage.feature.canny: the already Gaussian-smoothed luminance plane lum is
