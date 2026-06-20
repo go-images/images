@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-images/brand/main/social/go-images.png" alt="go-images/images" width="720"></p>
+
 # images — go-images
 
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-images.github.io/docs/)
