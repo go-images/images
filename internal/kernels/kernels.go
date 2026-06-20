@@ -503,6 +503,131 @@ func sobelDirectional(dst, src []uint8, width, height int, horizontal bool) {
 	})
 }
 
+// edgeWeights names the three central-difference smoothing triples used by the
+// scikit-image edge family. Each operator is a separable 3x3 kernel: a
+// derivative [+1, 0, -1] along one axis and a smoothing triple along the other.
+// The smoothing triple is normalised so the axis kernel's absolute weights sum
+// to one (sobel 0.25/0.5/0.25, prewitt 1/3 each, scharr 0.1875/0.625/0.1875),
+// matching skimage.filters.{sobel,prewitt,scharr}. With a 3-tap kernel the
+// scipy default boundary mode "reflect" coincides with clamp-to-edge, so the
+// library's existing nearest addressing reproduces skimage at the borders.
+type edgeWeights struct {
+	a, b, c float64 // the smoothing triple (top/bottom for the x-derivative)
+}
+
+var (
+	sobelSmooth   = edgeWeights{0.25, 0.5, 0.25}
+	prewittSmooth = edgeWeights{1.0 / 3, 1.0 / 3, 1.0 / 3}
+	scharrSmooth  = edgeWeights{0.1875, 0.625, 0.1875}
+)
+
+// edgeGradients computes the horizontal (gx) and vertical (gy) responses of a
+// normalised separable edge operator at pixel (x, y) of the width*height
+// luminance plane lum, using clamp-to-edge addressing. The operator's x-kernel
+// is the outer product of the derivative column [+1, 0, -1] and the smoothing
+// row (sm.a, sm.b, sm.c); the y-kernel is its transpose. Luminance is taken in
+// [0,255]; the caller scales the result.
+func edgeGradients(lum []float64, width, height, x, y int, sm edgeWeights) (gx, gy float64) {
+	x0 := clampIndex(x-1, width)
+	x1 := clampIndex(x+1, width)
+	y0 := clampIndex(y-1, height)
+	y1 := clampIndex(y+1, height)
+	tl := lum[y0*width+x0]
+	tc := lum[y0*width+x]
+	tr := lum[y0*width+x1]
+	ml := lum[y*width+x0]
+	mr := lum[y*width+x1]
+	bl := lum[y1*width+x0]
+	bc := lum[y1*width+x]
+	br := lum[y1*width+x1]
+	// x-derivative: (left - right) columns weighted by the smoothing triple
+	// across rows. gx = sum over rows of sm * (left - right).
+	gx = sm.a*(tl-tr) + sm.b*(ml-mr) + sm.c*(bl-br)
+	// y-derivative: (top - bottom) rows weighted by the smoothing triple across
+	// columns.
+	gy = sm.a*(tl-bl) + sm.b*(tc-bc) + sm.c*(tr-br)
+	return gx, gy
+}
+
+// edgeMagnitude writes the gradient-magnitude edge map of the named separable
+// operator (sobel/prewitt/scharr smoothing triple sm) into dst. It mirrors
+// skimage.filters.{prewitt,scharr,sobel} with axis=None: the magnitude is
+// sqrt((gx^2 + gy^2)/2) on the luminance scaled to [0,1]; here luminance is in
+// [0,255] and the magnitude is written back as a byte (clamped to [0,255]),
+// producing a grayscale edge image. Alpha is copied from src. Edges use
+// clamp-to-edge addressing (equivalent to skimage's reflect mode for a 3-tap
+// kernel). src and dst are RGBA slices of width*height pixels.
+func edgeMagnitude(dst, src []uint8, width, height int, sm edgeWeights) {
+	lum := lumaPlane(src, width, height)
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			for x := 0; x < width; x++ {
+				gx, gy := edgeGradients(lum, width, height, x, y, sm)
+				m := ClampByte(math.Sqrt((gx*gx + gy*gy) / 2))
+				di := (y*width + x) * 4
+				dst[di] = m
+				dst[di+1] = m
+				dst[di+2] = m
+				dst[di+3] = src[di+3]
+			}
+		}
+	})
+}
+
+// Prewitt writes the Prewitt gradient-magnitude edge map of src into dst; see
+// edgeMagnitude. It matches skimage.filters.prewitt.
+func Prewitt(dst, src []uint8, width, height int) {
+	edgeMagnitude(dst, src, width, height, prewittSmooth)
+}
+
+// Scharr writes the Scharr gradient-magnitude edge map of src into dst; see
+// edgeMagnitude. It matches skimage.filters.scharr. The Scharr smoothing triple
+// gives the best rotational symmetry of the three operators.
+func Scharr(dst, src []uint8, width, height int) {
+	edgeMagnitude(dst, src, width, height, scharrSmooth)
+}
+
+// SobelMag writes the normalised Sobel gradient-magnitude edge map of src into
+// dst using the skimage convention (sqrt((gx^2+gy^2)/2) on luminance in [0,1]).
+// This differs from the legacy Sobel above, which uses integer kernels and the
+// raw magnitude sqrt(gx^2+gy^2); SobelMag exists so the edge family shares one
+// skimage-faithful definition. It matches skimage.filters.sobel.
+func SobelMag(dst, src []uint8, width, height int) {
+	edgeMagnitude(dst, src, width, height, sobelSmooth)
+}
+
+// Laplacian writes the discrete Laplacian edge map of src into dst, matching
+// skimage.filters.laplace (ksize=3): the 3x3 kernel
+//
+//	[ 0 -1  0; -1  4 -1;  0 -1  0 ]
+//
+// applied to the luminance plane. The signed response is offset by 128 so a
+// flat region maps to mid-grey, a bright blob's rim swings above and the centre
+// below (or vice versa), clamped to [0,255] and written to R, G and B. Alpha is
+// copied from src; edges use clamp-to-edge addressing. The Laplacian is a
+// second-derivative operator, so it responds to intensity curvature (lines,
+// spots) rather than to step edges.
+func Laplacian(dst, src []uint8, width, height int) {
+	lum := lumaPlane(src, width, height)
+	forLines(height, width, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			for x := 0; x < width; x++ {
+				c := lum[y*width+x]
+				l := lum[y*width+clampIndex(x-1, width)]
+				r := lum[y*width+clampIndex(x+1, width)]
+				u := lum[clampIndex(y-1, height)*width+x]
+				d := lum[clampIndex(y+1, height)*width+x]
+				v := ClampByte(4*c - l - r - u - d + 128)
+				di := (y*width + x) * 4
+				dst[di] = v
+				dst[di+1] = v
+				dst[di+2] = v
+				dst[di+3] = src[di+3]
+			}
+		}
+	})
+}
+
 // morphOp selects the per-window reduction used by the separable morphology
 // passes: the minimum (erosion) or the maximum (dilation).
 type morphOp bool
