@@ -920,14 +920,15 @@ func Dilate(dst, src []uint8, width, height, radius int) {
 
 // morph runs the separable grayscale morphology (erode or dilate) into dst.
 //
-// Like the separable convolution it deinterleaves the R, G and B channels into
-// contiguous float64 planes so each per-window reduction is an elementwise
-// min/max over a flat array — the shape the SIMD vminInto/vmaxInto kernel
-// (dst[i] = op(dst[i], src[i])) vectorises — and fans the independent rows /
-// columns out across cores above ParThreshold. The values are exact integers in
-// [0,255], so the float round-trip and the packed MIN/MAX are exact (no NaN or
-// signed-zero cases), and the per-tap reduction order matches the scalar oracle,
-// keeping the result bit-identical and the morphology tests holding.
+// Each of the two separable passes (horizontal then vertical) is a 1-D windowed
+// min/max of window length 2*radius+1 with clamp-to-edge borders, computed by
+// the van Herk / Gil-Werman running extremum (vanHerk1D): exactly three
+// comparisons per output pixel independent of the radius, instead of the old
+// per-offset fold whose cost scaled with 2*radius+1. min/max is associative and
+// commutative, so the windowed result is independent of evaluation order and
+// stays bit-identical to the naive square-footprint oracle (matching
+// scipy.ndimage.grey_erosion / grey_dilation on a square element). The
+// independent rows / columns are still fanned across cores above ParThreshold.
 func morph(dst, src []uint8, width, height, radius int, op morphOp) {
 	tmp := make([]uint8, len(src))
 	// Horizontal pass: src -> tmp (rows are independent).
@@ -940,149 +941,268 @@ func morph(dst, src []uint8, width, height, radius int, op morphOp) {
 	})
 }
 
-// reduceInto applies the per-window reduction op (min for erosion, max for
-// dilation) elementwise: dst[i] = op(dst[i], src[i]), routing to the SIMD kernel.
-func reduceInto(dst, src []float64, op morphOp) {
-	if op == morphMax {
-		vmaxInto(dst, src)
-		return
-	}
-	vminInto(dst, src)
+// morphScratch holds the per-worker van Herk scratch buffers, reused across
+// every line a worker processes so the hot path allocates nothing. pad holds the
+// clamp-padded 1-D signal (length n + 2*radius) and pref / suf the forward
+// prefix / backward suffix block extrema over it.
+type morphScratch struct {
+	pad  []uint8
+	pref []uint8
+	suf  []uint8
 }
 
-// morphH runs the horizontal min/max for rows [lo,hi) of an RGBA image. For each
-// structuring-element offset the in-range columns are reduced as a contiguous
-// SIMD pass over the row; clamped border columns are reduced scalar, matching
-// the oracle exactly.
+// ensure (re)sizes the scratch buffers to hold a padded signal of m elements.
+func (s *morphScratch) ensure(m int) {
+	if cap(s.pad) < m {
+		s.pad = make([]uint8, m)
+		s.pref = make([]uint8, m)
+		s.suf = make([]uint8, m)
+		return
+	}
+	s.pad = s.pad[:m]
+	s.pref = s.pref[:m]
+	s.suf = s.suf[:m]
+}
+
+// vanHerk1D computes the windowed extremum of the n-sample signal held in
+// s.pad[radius : radius+n] over a window of length k = 2*radius+1 with
+// clamp-to-edge borders, writing n outputs into out[:n]. The caller must already
+// have filled s.pad: the radius leading entries clamped to the first sample, the
+// n signal samples, then radius trailing entries clamped to the last sample.
+//
+// The Gil-Werman scheme partitions the padded signal into blocks of k samples.
+// pref holds, within each block, the forward running extremum from the block
+// start; suf the backward running extremum to the block end. A window of length
+// k aligned at padded index j spans [j, j+k-1], which straddles at most two
+// adjacent blocks, so its extremum is op(suf[j], pref[j+k-1]) — three byte
+// comparisons per pixel, independent of radius. Output pixel x corresponds to
+// the window starting at padded index x (i.e. covering original [x-radius,
+// x+radius] after the radius shift).
+func (s *morphScratch) vanHerk1D(out []uint8, n, radius int, op morphOp) {
+	if n == 0 {
+		return
+	}
+	if op == morphMax {
+		vanHerkMax(out, s.pad, s.pref, s.suf, n, radius)
+		return
+	}
+	vanHerkMin(out, s.pad, s.pref, s.suf, n, radius)
+}
+
+// vanHerkMax is the O(1)-in-radius running maximum over the clamp-padded signal
+// pad (length n+2*radius) using forward block prefix (pref) and backward block
+// suffix (suf) extrema; see vanHerk1D. The comparison is expanded inline (no
+// func value) so the hot loops stay branch-predictable and inlinable. vanHerkMin
+// is the mirror image with the comparison flipped.
+func vanHerkMax(out, pad, pref, suf []uint8, n, radius int) {
+	k := 2*radius + 1
+	m := n + 2*radius
+	// Reslice the working arrays to exactly the padded length so the per-block
+	// loops and the merge below carry no redundant bounds checks (the compiler
+	// proves every index in [0,m)).
+	pad = pad[:m]
+	pref = pref[:m]
+	suf = suf[:m]
+	for b := 0; b < m; b += k {
+		end := b + k
+		if end > m {
+			end = m
+		}
+		acc := pad[b]
+		pref[b] = acc
+		for i := b + 1; i < end; i++ {
+			if v := pad[i]; v > acc {
+				acc = v
+			}
+			pref[i] = acc
+		}
+		acc = pad[end-1]
+		suf[end-1] = acc
+		for i := end - 2; i >= b; i-- {
+			if v := pad[i]; v > acc {
+				acc = v
+			}
+			suf[i] = acc
+		}
+	}
+	// The merge reads suf[x] and pref[x+k-1] for x in [0,n); both indices stay in
+	// [0,m) because n+k-1 = m. Slice pref to [k-1:] so pref[x+k-1] becomes p[x]
+	// and out/suf are addressed by the same induction variable, eliminating the
+	// bounds checks on the hottest loop.
+	out = out[:n]
+	suf = suf[:n]
+	p := pref[k-1:][:n]
+	for x := range out {
+		lo := suf[x]
+		if hi := p[x]; hi > lo {
+			out[x] = hi
+		} else {
+			out[x] = lo
+		}
+	}
+}
+
+func vanHerkMin(out, pad, pref, suf []uint8, n, radius int) {
+	k := 2*radius + 1
+	m := n + 2*radius
+	pad = pad[:m]
+	pref = pref[:m]
+	suf = suf[:m]
+	for b := 0; b < m; b += k {
+		end := b + k
+		if end > m {
+			end = m
+		}
+		acc := pad[b]
+		pref[b] = acc
+		for i := b + 1; i < end; i++ {
+			if v := pad[i]; v < acc {
+				acc = v
+			}
+			pref[i] = acc
+		}
+		acc = pad[end-1]
+		suf[end-1] = acc
+		for i := end - 2; i >= b; i-- {
+			if v := pad[i]; v < acc {
+				acc = v
+			}
+			suf[i] = acc
+		}
+	}
+	out = out[:n]
+	suf = suf[:n]
+	p := pref[k-1:][:n]
+	for x := range out {
+		lo := suf[x]
+		if hi := p[x]; hi < lo {
+			out[x] = hi
+		} else {
+			out[x] = lo
+		}
+	}
+}
+
+// padClamp fills the radius leading / trailing pad entries from the first / last
+// signal sample after the n signal samples have been written into
+// s.pad[radius:radius+n].
+func (s *morphScratch) padClamp(n, radius int) {
+	first := s.pad[radius]
+	last := s.pad[radius+n-1]
+	for i := 0; i < radius; i++ {
+		s.pad[i] = first
+		s.pad[radius+n+i] = last
+	}
+}
+
+// fillPad loads n source samples (read through get) into the signal portion of
+// s.pad[radius:radius+n] and clamps the borders. Used by the direct unit tests;
+// the production hot paths gather inline to avoid the closure.
+func (s *morphScratch) fillPad(n, radius int, get func(i int) uint8) {
+	for i := 0; i < n; i++ {
+		s.pad[radius+i] = get(i)
+	}
+	s.padClamp(n, radius)
+}
+
+// morphH runs the horizontal van Herk min/max for rows [lo,hi) of an RGBA image,
+// one channel at a time. Each row is an independent 1-D signal of width pixels;
+// the gather into the padded signal is inlined (no closure) and the three colour
+// channels are processed separately through the shared scratch. Alpha is copied
+// through.
 func morphH(dst, src []uint8, width, lo, hi, radius int, op morphOp) {
-	rr := make([]float64, width)
-	rg := make([]float64, width)
-	rb := make([]float64, width)
-	ar := make([]float64, width)
-	ag := make([]float64, width)
-	ab := make([]float64, width)
+	var sc morphScratch
+	sc.ensure(width + 2*radius)
+	out := make([]uint8, width)
+	sig := sc.pad[radius : radius+width]
 	for y := lo; y < hi; y++ {
 		base := y * width * 4
-		for x := 0; x < width; x++ {
-			p := base + x*4
-			rr[x] = float64(src[p])
-			rg[x] = float64(src[p+1])
-			rb[x] = float64(src[p+2])
+		for c := 0; c < 3; c++ {
+			p := base + c
+			for x := 0; x < width; x++ {
+				sig[x] = src[p]
+				p += 4
+			}
+			sc.padClamp(width, radius)
+			sc.vanHerk1D(out, width, radius, op)
+			p = base + c
+			for x := 0; x < width; x++ {
+				dst[p] = out[x]
+				p += 4
+			}
 		}
-		morphLine(ar, ag, ab, rr, rg, rb, width, radius, op)
+		p := base + 3
 		for x := 0; x < width; x++ {
-			p := base + x*4
-			dst[p] = uint8(ar[x])
-			dst[p+1] = uint8(ag[x])
-			dst[p+2] = uint8(ab[x])
-			dst[p+3] = src[p+3]
+			dst[p] = src[p]
+			p += 4
 		}
 	}
 }
 
-// morphV runs the vertical min/max for columns [lo,hi). It deinterleaves the
-// column band into contiguous per-channel float planes (rows of width' = hi-lo),
-// reduces over the structuring element with the same contiguous SIMD pass, and
-// writes the result back. Working on the transposed band keeps every reduction
-// contiguous in memory.
+// morphVTile is the number of columns the vertical pass transposes into a
+// contiguous band at a time. Reading a whole band row-by-row turns the otherwise
+// stride-(width*4) column gather (one cache line touched per pixel) into mostly
+// sequential reads, which dominates the vertical pass cost for large images. A
+// small band (8 columns × 3 uint8 planes of height each) keeps the working set
+// cache-resident so the gather/scan/scatter all stay fast even at 4096².
+const morphVTile = 8
+
+// morphV runs the vertical van Herk min/max for columns [lo,hi). It transposes a
+// band of up to morphVTile columns (read sequentially, cache-friendly) into a
+// contiguous per-channel buffer, runs the O(1) running extremum down each column
+// of the band, and scatters the result back. The three channels are processed
+// separately; alpha is copied through.
 func morphV(dst, src []uint8, width, height, lo, hi, radius int, op morphOp) {
-	bw := hi - lo // band width (number of columns in this tile)
-	ar := make([]float64, bw)
-	ag := make([]float64, bw)
-	ab := make([]float64, bw)
-	gr := make([]float64, bw) // per-band gather scratch, reused across rows
-	gg := make([]float64, bw)
-	gb := make([]float64, bw)
-	for y := 0; y < height; y++ {
-		base := y * width * 4
-		morphColumn(ar, ag, ab, gr, gg, gb, src, width, height, lo, bw, y, radius, op)
+	var sc morphScratch
+	sc.ensure(height + 2*radius)
+	sig := sc.pad[radius : radius+height]
+	stride := width * 4
+	// band[c] holds, transposed, the band's channel c as bw contiguous columns of
+	// height samples each: band[c][col*height + y].
+	tile := hi - lo
+	if tile > morphVTile {
+		tile = morphVTile
+	}
+	var band [3][]uint8
+	for c := 0; c < 3; c++ {
+		band[c] = make([]uint8, tile*height)
+	}
+	for x0 := lo; x0 < hi; x0 += morphVTile {
+		bw := hi - x0
+		if bw > morphVTile {
+			bw = morphVTile
+		}
+		// Transpose-gather the band: sequential pass over the source rows.
+		for y := 0; y < height; y++ {
+			p := y*stride + x0*4
+			off := y
+			for j := 0; j < bw; j++ {
+				band[0][j*height+off] = src[p]
+				band[1][j*height+off] = src[p+1]
+				band[2][j*height+off] = src[p+2]
+				p += 4
+			}
+		}
 		for j := 0; j < bw; j++ {
-			p := base + (lo+j)*4
-			dst[p] = uint8(ar[j])
-			dst[p+1] = uint8(ag[j])
-			dst[p+2] = uint8(ab[j])
-			dst[p+3] = src[p+3]
+			for c := 0; c < 3; c++ {
+				col := band[c][j*height : j*height+height]
+				copy(sig, col)
+				sc.padClamp(height, radius)
+				sc.vanHerk1D(col, height, radius, op) // in place: writes back into band
+			}
 		}
-	}
-}
-
-// morphLine computes the windowed min/max along one horizontal line of width
-// pixels held in rr/rg/rb, writing the result into ar/ag/ab. It initialises the
-// accumulators from the first structuring-element offset, then folds the rest in
-// tap order with reduceInto over the contiguous in-range span (clamped border
-// columns folded scalar), exactly matching the scalar oracle's ordering.
-func morphLine(ar, ag, ab, rr, rg, rb []float64, width, radius int, op morphOp) {
-	first := func(i int) int { return clampIndex(i-radius, width) }
-	for x := 0; x < width; x++ {
-		s := first(x)
-		ar[x], ag[x], ab[x] = rr[s], rg[s], rb[s]
-	}
-	for t := -radius + 1; t <= radius; t++ {
-		loX, hiX := inRangeSpan(t, width)
-		for x := 0; x < loX; x++ {
-			reduceScalar(ar, ag, ab, rr, rg, rb, x, 0, op)
+		// Scatter back (sequential pass over the source rows), copying alpha.
+		for y := 0; y < height; y++ {
+			p := y*stride + x0*4
+			off := y
+			for j := 0; j < bw; j++ {
+				dst[p] = band[0][j*height+off]
+				dst[p+1] = band[1][j*height+off]
+				dst[p+2] = band[2][j*height+off]
+				dst[p+3] = src[p+3]
+				p += 4
+			}
 		}
-		for x := hiX; x < width; x++ {
-			reduceScalar(ar, ag, ab, rr, rg, rb, x, width-1, op)
-		}
-		if hiX > loX {
-			reduceInto(ar[loX:hiX], rr[loX+t:hiX+t], op)
-			reduceInto(ag[loX:hiX], rg[loX+t:hiX+t], op)
-			reduceInto(ab[loX:hiX], rb[loX+t:hiX+t], op)
-		}
-	}
-}
-
-// morphColumn computes the windowed min/max along the vertical structuring
-// element for output row y over the column band [lo,lo+bw), writing into
-// ar/ag/ab. Each tap gathers a (clamped) source row's band into contiguous
-// scratch and folds it with reduceInto, mirroring morphLine but along the
-// vertical axis.
-func morphColumn(ar, ag, ab, gr, gg, gb []float64, src []uint8, width, height, lo, bw, y, radius int, op morphOp) {
-	gather := func(sy int) {
-		base := sy * width * 4
-		for j := 0; j < bw; j++ {
-			p := base + (lo+j)*4
-			gr[j] = float64(src[p])
-			gg[j] = float64(src[p+1])
-			gb[j] = float64(src[p+2])
-		}
-	}
-	gather(clampIndex(y-radius, height))
-	copy(ar, gr)
-	copy(ag, gg)
-	copy(ab, gb)
-	for t := -radius + 1; t <= radius; t++ {
-		gather(clampIndex(y+t, height))
-		reduceInto(ar, gr, op)
-		reduceInto(ag, gg, op)
-		reduceInto(ab, gb, op)
-	}
-}
-
-// reduceScalar folds source column sx into accumulator column x for all three
-// channels, used for the clamped border columns of the horizontal pass.
-func reduceScalar(ar, ag, ab, rr, rg, rb []float64, x, sx int, op morphOp) {
-	if op == morphMax {
-		if rr[sx] > ar[x] {
-			ar[x] = rr[sx]
-		}
-		if rg[sx] > ag[x] {
-			ag[x] = rg[sx]
-		}
-		if rb[sx] > ab[x] {
-			ab[x] = rb[sx]
-		}
-		return
-	}
-	if rr[sx] < ar[x] {
-		ar[x] = rr[sx]
-	}
-	if rg[sx] < ag[x] {
-		ag[x] = rg[sx]
-	}
-	if rb[sx] < ab[x] {
-		ab[x] = rb[sx]
 	}
 }
 

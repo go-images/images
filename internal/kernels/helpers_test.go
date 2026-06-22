@@ -29,37 +29,84 @@ func TestInRangeSpan(t *testing.T) {
 	}
 }
 
-// TestReduceScalar exercises both the min and max branches of reduceScalar for
-// all three channels, in both the "source wins" and "accumulator wins" cases.
-func TestReduceScalar(t *testing.T) {
-	rr := []float64{10, 20, 30}
-	rg := []float64{40, 50, 60}
-	rb := []float64{70, 80, 90}
+// vanHerkOracle is a brute-force O(n*k) windowed extremum with clamp-to-edge
+// borders, used to validate the O(1) van Herk implementation directly.
+func vanHerkOracle(sig []uint8, radius int, op morphOp) []uint8 {
+	n := len(sig)
+	out := make([]uint8, n)
+	clamp := func(i int) uint8 {
+		if i < 0 {
+			i = 0
+		}
+		if i >= n {
+			i = n - 1
+		}
+		return sig[i]
+	}
+	for x := 0; x < n; x++ {
+		acc := clamp(x - radius)
+		for t := -radius + 1; t <= radius; t++ {
+			v := clamp(x + t)
+			if op == morphMax {
+				if v > acc {
+					acc = v
+				}
+			} else if v < acc {
+				acc = v
+			}
+		}
+		out[x] = acc
+	}
+	return out
+}
 
-	// max: src column 2 (30,60,90) beats accumulator (1,1,1) on every channel.
-	ar := []float64{1}
-	ag := []float64{1}
-	ab := []float64{1}
-	reduceScalar(ar, ag, ab, rr, rg, rb, 0, 2, morphMax)
-	if ar[0] != 30 || ag[0] != 60 || ab[0] != 90 {
-		t.Fatalf("max src-wins: %v %v %v", ar, ag, ab)
+// TestVanHerk1D validates the O(1) running min/max against a brute-force oracle
+// across signal lengths, radii (exercising full and partial trailing blocks),
+// the empty signal, and both reduction directions.
+func TestVanHerk1D(t *testing.T) {
+	seeds := [][]uint8{
+		{},
+		{42},
+		{5, 1, 9, 3, 7, 2, 8, 4, 6, 0},
+		{255, 0, 255, 0, 255, 0, 255},
+		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
 	}
-	// max: accumulator (99) beats src column 0 (10,40,70).
-	ar[0], ag[0], ab[0] = 99, 99, 99
-	reduceScalar(ar, ag, ab, rr, rg, rb, 0, 0, morphMax)
-	if ar[0] != 99 || ag[0] != 99 || ab[0] != 99 {
-		t.Fatalf("max acc-wins: %v %v %v", ar, ag, ab)
+	for si, sig := range seeds {
+		for _, radius := range []int{1, 2, 3, 4, 5} {
+			for _, op := range []morphOp{morphMin, morphMax} {
+				var sc morphScratch
+				sc.ensure(len(sig) + 2*radius)
+				sc.fillPad(len(sig), radius, func(i int) uint8 { return sig[i] })
+				got := make([]uint8, len(sig))
+				sc.vanHerk1D(got, len(sig), radius, op)
+				want := vanHerkOracle(sig, radius, op)
+				for i := range want {
+					if got[i] != want[i] {
+						t.Fatalf("seed %d radius %d op %v: at %d got %d want %d",
+							si, radius, op, i, got[i], want[i])
+					}
+				}
+			}
+		}
 	}
-	// min: src column 0 (10,40,70) beats accumulator (99).
-	ar[0], ag[0], ab[0] = 99, 99, 99
-	reduceScalar(ar, ag, ab, rr, rg, rb, 0, 0, morphMin)
-	if ar[0] != 10 || ag[0] != 40 || ab[0] != 70 {
-		t.Fatalf("min src-wins: %v %v %v", ar, ag, ab)
+}
+
+// TestMorphScratchEnsureReuse exercises both the grow and the in-place reuse
+// branches of morphScratch.ensure.
+func TestMorphScratchEnsureReuse(t *testing.T) {
+	var sc morphScratch
+	sc.ensure(8)
+	if len(sc.pad) != 8 || len(sc.pref) != 8 || len(sc.suf) != 8 {
+		t.Fatalf("ensure(8): lengths %d %d %d", len(sc.pad), len(sc.pref), len(sc.suf))
 	}
-	// min: accumulator (1) beats src column 2 (30,60,90).
-	ar[0], ag[0], ab[0] = 1, 1, 1
-	reduceScalar(ar, ag, ab, rr, rg, rb, 0, 2, morphMin)
-	if ar[0] != 1 || ag[0] != 1 || ab[0] != 1 {
-		t.Fatalf("min acc-wins: %v %v %v", ar, ag, ab)
+	// Shrink-and-reuse: smaller request keeps the backing array.
+	sc.ensure(4)
+	if len(sc.pad) != 4 || cap(sc.pad) < 8 {
+		t.Fatalf("ensure(4) reuse: len %d cap %d", len(sc.pad), cap(sc.pad))
+	}
+	// Grow: larger request reallocates.
+	sc.ensure(16)
+	if len(sc.pad) != 16 || len(sc.pref) != 16 || len(sc.suf) != 16 {
+		t.Fatalf("ensure(16): lengths %d %d %d", len(sc.pad), len(sc.pref), len(sc.suf))
 	}
 }

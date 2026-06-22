@@ -42,18 +42,18 @@ Mpix/s ÷ scikit-image Mpix/s (> 1 means go-images is faster). Reproduce with
 | Sobel edge (gray) | 512² | 94.2 Mpix/s | 121 Mpix/s | 901 Mpix/s | **0.78×** | skimage faster |
 | Sobel edge (gray) | 1024² | 93.3 Mpix/s | 119 Mpix/s | 937 Mpix/s | **0.78×** | skimage faster |
 | Sobel edge (gray) | 4096² | 94.9 Mpix/s | 119 Mpix/s | 914 Mpix/s | **0.80×** | skimage faster |
-| Erode r=3 (gray) | 512² | 51.4 Mpix/s | 88.5 Mpix/s | 10,810 Mpix/s | **0.58×** | skimage faster |
-| Erode r=3 (gray) | 1024² | 52.9 Mpix/s | 75.9 Mpix/s | 11,782 Mpix/s | **0.70×** | skimage faster |
-| Erode r=3 (gray) | 4096² | 45.0 Mpix/s | 58.5 Mpix/s | 11,046 Mpix/s | **0.77×** | skimage faster |
-| Dilate r=3 (gray) | 512² | 51.3 Mpix/s | 83.9 Mpix/s | 11,038 Mpix/s | **0.61×** | skimage faster |
-| Dilate r=3 (gray) | 1024² | 52.7 Mpix/s | 74.7 Mpix/s | 11,434 Mpix/s | **0.71×** | skimage faster |
-| Dilate r=3 (gray) | 4096² | 45.1 Mpix/s | 59.9 Mpix/s | 10,937 Mpix/s | **0.75×** | skimage faster |
-| Open r=3 (gray) | 512² | 25.6 Mpix/s | 48.8 Mpix/s | 5,490 Mpix/s | **0.53×** | skimage faster |
-| Open r=3 (gray) | 1024² | 26.6 Mpix/s | 43.1 Mpix/s | 5,674 Mpix/s | **0.62×** | skimage faster |
-| Open r=3 (gray) | 4096² | 22.6 Mpix/s | 32.9 Mpix/s | 5,304 Mpix/s | **0.69×** | skimage faster |
-| Close r=3 (gray) | 512² | 25.9 Mpix/s | 49.6 Mpix/s | 5,424 Mpix/s | **0.52×** | skimage faster |
-| Close r=3 (gray) | 1024² | 26.7 Mpix/s | 44.2 Mpix/s | 5,694 Mpix/s | **0.60×** | skimage faster |
-| Close r=3 (gray) | 4096² | 22.7 Mpix/s | 33.1 Mpix/s | 5,472 Mpix/s | **0.68×** | skimage faster |
+| Erode r=3 (gray) | 512² | 63.4 Mpix/s | 80.8 Mpix/s | 10,773 Mpix/s | **0.79×** | skimage faster |
+| Erode r=3 (gray) | 1024² | 64.3 Mpix/s | 74.2 Mpix/s | 11,711 Mpix/s | **0.87×** | skimage faster |
+| Erode r=3 (gray) | 4096² | 56.9 Mpix/s | 55.6 Mpix/s | 10,511 Mpix/s | **1.02×** | ~parity |
+| Dilate r=3 (gray) | 512² | 63.9 Mpix/s | 80.1 Mpix/s | 10,718 Mpix/s | **0.80×** | skimage faster |
+| Dilate r=3 (gray) | 1024² | 63.3 Mpix/s | 72.8 Mpix/s | 11,449 Mpix/s | **0.87×** | skimage faster |
+| Dilate r=3 (gray) | 4096² | 57.0 Mpix/s | 59.4 Mpix/s | 10,626 Mpix/s | **0.96×** | ~parity |
+| Open r=3 (gray) | 512² | 32.7 Mpix/s | 47.5 Mpix/s | 5,558 Mpix/s | **0.69×** | skimage faster |
+| Open r=3 (gray) | 1024² | 32.8 Mpix/s | 42.1 Mpix/s | 5,658 Mpix/s | **0.78×** | skimage faster |
+| Open r=3 (gray) | 4096² | 29.1 Mpix/s | 31.9 Mpix/s | 5,203 Mpix/s | **0.91×** | skimage faster |
+| Close r=3 (gray) | 512² | 32.9 Mpix/s | 51.1 Mpix/s | 5,428 Mpix/s | **0.64×** | skimage faster |
+| Close r=3 (gray) | 1024² | 33.0 Mpix/s | 42.9 Mpix/s | 5,805 Mpix/s | **0.77×** | skimage faster |
+| Close r=3 (gray) | 4096² | 29.2 Mpix/s | 31.3 Mpix/s | 5,325 Mpix/s | **0.93×** | skimage faster |
 | Flip horizontal (RGB) | 512² | 806 Mpix/s | 401 Mpix/s | 3,421 Mpix/s | **2.01×** | go faster |
 | Flip horizontal (RGB) | 1024² | 816 Mpix/s | 400 Mpix/s | 3,270 Mpix/s | **2.04×** | go faster |
 | Flip horizontal (RGB) | 4096² | 870 Mpix/s | 381 Mpix/s | 2,889 Mpix/s | **2.28×** | go faster |
@@ -90,20 +90,21 @@ images.
 | Gaussian σ=2 | 4096² | 140 Mpix/s | 23.3 Mpix/s | 235 Mpix/s | **6.03×** |
 | Sobel | 1024² | 295 Mpix/s | 123 Mpix/s | 978 Mpix/s | **2.41×** |
 | Sobel | 4096² | 338 Mpix/s | 118 Mpix/s | 919 Mpix/s | **2.87×** |
-| Erode r=3 | 1024² | 216 Mpix/s | 75.5 Mpix/s | 12,081 Mpix/s | **2.86×** |
-| Erode r=3 | 4096² | 268 Mpix/s | 58.1 Mpix/s | 10,844 Mpix/s | **4.62×** |
-| Dilate r=3 | 1024² | 243 Mpix/s | 76.9 Mpix/s | 11,465 Mpix/s | **3.16×** |
-| Dilate r=3 | 4096² | 273 Mpix/s | 56.6 Mpix/s | 10,898 Mpix/s | **4.82×** |
-| Open r=3 | 1024² | 131 Mpix/s | 45.6 Mpix/s | 6,265 Mpix/s | **2.86×** |
-| Open r=3 | 4096² | 126 Mpix/s | 34.3 Mpix/s | 5,176 Mpix/s | **3.66×** |
-| Close r=3 | 1024² | 97.2 Mpix/s | 44.7 Mpix/s | 5,764 Mpix/s | **2.17×** |
-| Close r=3 | 4096² | 80.6 Mpix/s | 33.8 Mpix/s | 4,572 Mpix/s | **2.39×** |
+| Erode r=3 | 1024² | 386 Mpix/s | 74.1 Mpix/s | 12,081 Mpix/s | **5.21×** |
+| Erode r=3 | 4096² | 407 Mpix/s | 59.3 Mpix/s | 10,844 Mpix/s | **6.86×** |
+| Dilate r=3 | 1024² | 426 Mpix/s | 76.1 Mpix/s | 11,465 Mpix/s | **5.60×** |
+| Dilate r=3 | 4096² | 446 Mpix/s | 57.1 Mpix/s | 10,898 Mpix/s | **7.81×** |
+| Open r=3 | 1024² | 214 Mpix/s | 42.3 Mpix/s | 6,265 Mpix/s | **5.06×** |
+| Open r=3 | 4096² | 212 Mpix/s | 31.6 Mpix/s | 5,176 Mpix/s | **6.71×** |
+| Close r=3 | 1024² | 213 Mpix/s | 44.4 Mpix/s | 5,764 Mpix/s | **4.80×** |
+| Close r=3 | 4096² | 220 Mpix/s | 31.9 Mpix/s | 4,572 Mpix/s | **6.89×** |
 
 With all 16 cores go-images is faster than single-threaded scikit-image on **every**
-op (morphology included, 2.2–4.8×). But OpenCV's morphology — single-threaded
-O(1) van-Herk min/max + SIMD — is still **40–160× ahead** even of go-images on all
-cores, which is the algorithmic evidence for action item **A** below: throwing
-cores at an O(radius) kernel cannot substitute for the O(1) algorithm.
+op (morphology now 4.8–7.8×, up from 2.2–4.8× before the van-Herk rewrite). OpenCV's
+morphology — single-threaded O(1) van-Herk min/max **with SIMD** — is still
+**20–55× ahead** even of go-images on all cores; closing that residual is a pure
+constant-factor (SIMD) job now that the algorithm is O(1), tracked as action item
+**C** below.
 
 ## Summary
 
@@ -124,13 +125,17 @@ cores at an O(radius) kernel cannot substitute for the O(1) algorithm.
 
 **Where go-images lags (the real compute gaps):**
 
-1. **Morphology (erode/dilate/open/close) — 0.5–0.77× of scikit-image, ~200× behind
-   OpenCV.** *This is the priority gap.* Root cause: `morph()` /
-   `morphLine` / `morphColumn` use a **naïve O(radius) fold** — each of the
-   `2·radius+1` structuring-element offsets is a full `vminInto`/`vmaxInto` pass over
-   the line. Work scales with the kernel width; scipy's C inner loop is tighter and
-   OpenCV uses an O(1) separable min/max with SIMD. Open/Close are 2× worse again
-   because they run erosion then dilation (two full O(radius) operators).
+1. **Morphology (erode/dilate/open/close) — now 0.64–1.02× of scikit-image** (was
+   0.5–0.77×; see action item **A**, now **done**). The naïve O(radius) fold was
+   replaced with the **van Herk / Gil-Werman O(1) running min/max** (`morph()` /
+   `vanHerk1D` / `vanHerkMin`/`vanHerkMax` in `internal/kernels/kernels.go`): exactly
+   three comparisons per pixel independent of radius, so erode/dilate are now **flat
+   in radius** (≈64–78 Mpix/s from r=3 to r=20, where the old fold degraded ~6× by
+   r=20) and reach **parity-to-1.02×** of scikit-image at 4096² single-thread. The
+   residual single-thread gap at small radius (≈0.8× at 512²) is a pure
+   constant-factor difference vs scipy's tuned C grayscale inner loop and the
+   3-channel RGBA round-trip; it closes with SIMD (action item **C**). Open/Close
+   inherit the O(1) operator (two passes, hence ~half the throughput).
 2. **Sobel — 0.78–0.80×.** go-images recomputes Rec.601 luminance and the gradient
    magnitude (with a `sqrt`) per pixel through the RGBA buffer; scikit-image's
    `sobel` runs two correlate1d passes on a single pre-extracted float plane.
@@ -141,15 +146,20 @@ cores at an O(radius) kernel cannot substitute for the O(1) algorithm.
 
 ## Action items to reach parity
 
-**A. Morphology — O(1) van Herk / Gil-Werman (highest impact).**
-Replace the per-offset fold in `morphLine`/`morphColumn` with the **van Herk /
-Gil-Werman** running min/max: split each line into windows of size `2r+1`, build a
-forward prefix-min/max and a backward suffix-min/max over each window, then every
-output is `min(suffix[left], prefix[right])` — **3 comparisons per pixel
-independent of radius** instead of `2r+1`. Apply it to both separable passes. This
-alone makes erode/dilate cost flat in radius and should move the family from ~0.6×
-to ≥ scikit-image; combined with SIMD it approaches OpenCV. Open/Close inherit it
-for free.
+**A. Morphology — O(1) van Herk / Gil-Werman. ✅ DONE.**
+The per-offset fold in `morphLine`/`morphColumn` was replaced with the **van Herk /
+Gil-Werman** running min/max: each separable pass splits the clamp-padded line into
+blocks of size `2r+1`, builds a forward prefix-min/max and a backward suffix-min/max
+over each block (`vanHerk1D` → `vanHerkMin`/`vanHerkMax`), then every output is
+`op(suffix[left], prefix[right])` — **3 comparisons per pixel independent of
+radius** instead of `2r+1`. The vertical pass transposes an 8-column band into a
+contiguous buffer first so the column scan stays cache-resident. Result: erode/
+dilate are flat in radius and at **parity → 1.02×** of scikit-image at 4096²
+single-thread (was 0.58–0.77×), and **4.8–7.8×** on all cores (was 2.2–4.8×). Output
+stays byte-identical to `scipy.ndimage.grey_erosion`/`grey_dilation` (verify gate
+max|diff|=0). Open/Close inherited the O(1) operator for free. The residual gap vs
+scipy's tuned C at small radius / vs OpenCV is now a pure constant factor → SIMD
+(item **C**).
 
 **B. Sobel — operate on a cached luminance plane.**
 `lumaPlane` already exists; extend the gradient operators to consume it directly
