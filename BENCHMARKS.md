@@ -39,9 +39,9 @@ Mpix/s ÷ scikit-image Mpix/s (> 1 means go-images is faster). Reproduce with
 | Gaussian σ=2 (RGB) | 512² | 35.8 Mpix/s | 35.1 Mpix/s | 217 Mpix/s | **1.02×** | ~parity |
 | Gaussian σ=2 (RGB) | 1024² | 38.6 Mpix/s | 30.7 Mpix/s | 228 Mpix/s | **1.26×** | go faster |
 | Gaussian σ=2 (RGB) | 4096² | 30.5 Mpix/s | 23.5 Mpix/s | 236 Mpix/s | **1.30×** | go faster |
-| Sobel edge (gray) | 512² | 94.2 Mpix/s | 121 Mpix/s | 901 Mpix/s | **0.78×** | skimage faster |
-| Sobel edge (gray) | 1024² | 93.3 Mpix/s | 119 Mpix/s | 937 Mpix/s | **0.78×** | skimage faster |
-| Sobel edge (gray) | 4096² | 94.9 Mpix/s | 119 Mpix/s | 914 Mpix/s | **0.80×** | skimage faster |
+| Sobel edge (gray) | 512² | 128 Mpix/s | 121 Mpix/s | 901 Mpix/s | **1.06×** | go faster |
+| Sobel edge (gray) | 1024² | 123 Mpix/s | 119 Mpix/s | 937 Mpix/s | **1.03×** | ~parity |
+| Sobel edge (gray) | 4096² | 121 Mpix/s | 119 Mpix/s | 914 Mpix/s | **1.02×** | ~parity |
 | Erode r=3 (gray) | 512² | 63.4 Mpix/s | 80.8 Mpix/s | 10,773 Mpix/s | **0.79×** | skimage faster |
 | Erode r=3 (gray) | 1024² | 64.3 Mpix/s | 74.2 Mpix/s | 11,711 Mpix/s | **0.87×** | skimage faster |
 | Erode r=3 (gray) | 4096² | 56.9 Mpix/s | 55.6 Mpix/s | 10,511 Mpix/s | **1.02×** | ~parity |
@@ -88,8 +88,8 @@ images.
 | Box blur r=2 | 4096² | 302 Mpix/s | 29.3 Mpix/s | 2,096 Mpix/s | **10.33×** |
 | Gaussian σ=2 | 1024² | 140 Mpix/s | 31.9 Mpix/s | 231 Mpix/s | **4.41×** |
 | Gaussian σ=2 | 4096² | 140 Mpix/s | 23.3 Mpix/s | 235 Mpix/s | **6.03×** |
-| Sobel | 1024² | 295 Mpix/s | 123 Mpix/s | 978 Mpix/s | **2.41×** |
-| Sobel | 4096² | 338 Mpix/s | 118 Mpix/s | 919 Mpix/s | **2.87×** |
+| Sobel | 1024² | 516 Mpix/s | 123 Mpix/s | 978 Mpix/s | **4.20×** |
+| Sobel | 4096² | 564 Mpix/s | 118 Mpix/s | 919 Mpix/s | **4.78×** |
 | Erode r=3 | 1024² | 386 Mpix/s | 74.1 Mpix/s | 12,081 Mpix/s | **5.21×** |
 | Erode r=3 | 4096² | 407 Mpix/s | 59.3 Mpix/s | 10,844 Mpix/s | **6.86×** |
 | Dilate r=3 | 1024² | 426 Mpix/s | 76.1 Mpix/s | 11,465 Mpix/s | **5.60×** |
@@ -122,6 +122,15 @@ constant-factor (SIMD) job now that the algorithm is O(1), tracked as action ite
   temporaries over the whole array; go-images does it in one fused per-pixel pass.
 - **Flip horizontal — ~2×.** Tight byte-reversal vs `np.fliplr().copy()`.
 - **Grayscale — ~parity** (0.86–1.28×), single fused luma pass.
+- **Sobel — now at parity → 1.06× faster** (was the known 0.78× gap; see action item
+  **B**, now **done**). The gradient still runs on the cached `lumaPlane`, but each
+  row is now split into clamp-addressed border columns and a **branch-free interior
+  run** with the three row bases hoisted out of the x-loop, so the four per-pixel
+  `clampIndex` calls vanish everywhere except the image edge (`Sobel` + `sobelStore`
+  in `internal/kernels/kernels.go`). Output stays byte-identical to the naive form
+  (differential test vs an independent reference, incl. 1×N/ N×1 strips). Result:
+  **1.02–1.06×** of scikit-image single-thread (was 0.78–0.80×) and **4.2–4.8×** on
+  all cores (was 2.4–2.9×).
 
 **Where go-images lags (the real compute gaps):**
 
@@ -136,10 +145,7 @@ constant-factor (SIMD) job now that the algorithm is O(1), tracked as action ite
    constant-factor difference vs scipy's tuned C grayscale inner loop and the
    3-channel RGBA round-trip; it closes with SIMD (action item **C**). Open/Close
    inherit the O(1) operator (two passes, hence ~half the throughput).
-2. **Sobel — 0.78–0.80×.** go-images recomputes Rec.601 luminance and the gradient
-   magnitude (with a `sqrt`) per pixel through the RGBA buffer; scikit-image's
-   `sobel` runs two correlate1d passes on a single pre-extracted float plane.
-3. **Rotate90 / Crop / Otsu (†).** Reference side is a numpy view/copy or a histogram;
+2. **Rotate90 / Crop / Otsu (†).** Reference side is a numpy view/copy or a histogram;
    these are memory-bandwidth and allocator races, not algorithmic gaps. go-images
    allocates a fresh origin-anchored RGBA each call (2 allocs); the only realistic
    win is an in-place / caller-supplied-buffer API.
@@ -161,17 +167,28 @@ max|diff|=0). Open/Close inherited the O(1) operator for free. The residual gap 
 scipy's tuned C at small radius / vs OpenCV is now a pure constant factor → SIMD
 (item **C**).
 
-**B. Sobel — operate on a cached luminance plane.**
-`lumaPlane` already exists; extend the gradient operators to consume it directly
-(as Canny does via `GaussianPlane`) so luminance is computed once, not per tap, and
-hoist the magnitude `sqrt` to a vectorised pass. Target: close the 0.78× to ≥1×.
+**B. Sobel — operate on a cached luminance plane. ✅ DONE.**
+The gradient already ran on the cached `lumaPlane`; the remaining cost was the four
+per-pixel `clampIndex` boundary checks (one per neighbour axis) evaluated on *every*
+pixel, plus the per-pixel row-base multiplies inside `sobelGradients`. `Sobel` now
+splits each row into the two clamp-addressed border columns (`sobelStore`) and a
+**branch-free interior run** (columns `1..width-2`) with the three row bases
+(`up`/`md`/`dn`) hoisted out of the x-loop, so the interior pays zero clamps. The
+arithmetic is unchanged, so the output is byte-identical to the naive form — proved
+by a differential test against an independent reference over pseudo-random images,
+including 1×N / N×1 / 1×1 / 2×2 strips that exercise the degenerate borders. Result:
+**1.02–1.06×** of scikit-image single-thread (was 0.78–0.80×; +1.27–1.36× raw
+throughput, ≈95→121–128 Mpix/s) and **4.2–4.8×** on all cores. The next lever is the
+magnitude `sqrt` and the derivative taps under SIMD → item **C**.
 
-**C. SIMD the morphology/Sobel reductions via go-asmgen (all 6 arches).**
-The min/max and axpy kernels already have `simd_amd64.s` / `simd_arm64.s` /
-`simd_s390x.s` with a generic fallback. Once the algorithm is O(1) (A), regenerate
-packed-min/max and the magnitude kernel through **go-asmgen** for amd64/arm64/
-riscv64/loong64/ppc64le/s390x so the constant-factor inner loop is vectorised on
-every 64-bit target, matching the project's SIMD-on-6-arches standard.
+**C. SIMD the morphology/Sobel reductions via go-asmgen (all 6 arches).** *(open;
+medium–large.)* The min/max and axpy kernels already have `simd_amd64.s` /
+`simd_arm64.s` / `simd_s390x.s` with a generic fallback. Now that both operators are
+algorithmically at parity (morphology O(1) via A, Sobel branch-free via B), the
+residual vs OpenCV is a pure constant factor: regenerate packed-min/max and the
+Sobel magnitude/derivative kernel through **go-asmgen** for amd64/arm64/riscv64/
+loong64/ppc64le/s390x so the inner loop is vectorised on every 64-bit target,
+matching the project's SIMD-on-6-arches standard.
 
 **D. Multicore is already in place — keep it as the large-image lever.**
 The parallel tiling (`forLines`, `ParThreshold`) is what carries the multi-thread
@@ -179,7 +196,7 @@ row. After (A)–(C) the per-core kernel is O(1)+SIMD, so the multi-thread numbe
 scale the single-thread parity by core count — the durable way a pure-Go library
 stays ahead of single-threaded scikit-image on 1024²–4096² images.
 
-**E. Allocation-light transform API (Crop/Rotate/Flip).**
+**E. Allocation-light transform API (Crop/Rotate/Flip).** *(open; small–medium.)*
 Offer in-place or destination-buffer variants so the trivially memory-bound ops
 stop paying for a fresh `image.NewRGBA` per call.
 

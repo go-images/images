@@ -201,10 +201,20 @@ func sobelNaive(src []uint8, w, h int) []uint8 {
 }
 
 func TestSobelMatchesNaiveReference(t *testing.T) {
-	// Differential test on a deterministic pseudo-random image: the production
-	// kernel must agree with the independent naive reference pixel for pixel.
-	const w, h = 17, 13
-	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	// Differential test on deterministic pseudo-random images: the production
+	// kernel (which splits every row into clamp-addressed border columns and a
+	// branch-free interior run) must agree with the independent naive reference
+	// pixel for pixel. The size list deliberately includes single-column and
+	// single-row strips (width==1 / height==1) so the degenerate borders — where
+	// the interior loop is empty and the right-border column collapses onto the
+	// left one — are exercised, not just the general interior+border case.
+	sizes := []struct{ w, h int }{
+		{17, 13}, // general: interior + all four borders
+		{1, 13},  // single column: no interior x, width==1 branch
+		{17, 1},  // single row: no interior y
+		{1, 1},   // single pixel: everything clamps to itself
+		{2, 2},   // no interior columns/rows, only borders
+	}
 	seed := uint32(2463534242)
 	next := func() uint8 {
 		seed ^= seed << 13
@@ -212,14 +222,18 @@ func TestSobelMatchesNaiveReference(t *testing.T) {
 		seed ^= seed << 5
 		return uint8(seed)
 	}
-	for i := 0; i < len(src.Pix); i += 4 {
-		src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3] = next(), next(), next(), 255
-	}
-	got := Sobel(src)
-	want := sobelNaive(src.Pix, w, h)
-	for i := range want {
-		if got.Pix[i] != want[i] {
-			t.Fatalf("Sobel disagrees with reference at byte %d: got %d want %d", i, got.Pix[i], want[i])
+	for _, sz := range sizes {
+		src := image.NewRGBA(image.Rect(0, 0, sz.w, sz.h))
+		for i := 0; i < len(src.Pix); i += 4 {
+			src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3] = next(), next(), next(), 255
+		}
+		got := Sobel(src)
+		want := sobelNaive(src.Pix, sz.w, sz.h)
+		for i := range want {
+			if got.Pix[i] != want[i] {
+				t.Fatalf("Sobel %dx%d disagrees with reference at byte %d: got %d want %d",
+					sz.w, sz.h, i, got.Pix[i], want[i])
+			}
 		}
 	}
 }

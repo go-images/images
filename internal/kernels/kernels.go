@@ -484,23 +484,67 @@ func sobelGradients(lum []float64, width, height, x, y int) (gx, gy float64) {
 	return gx, gy
 }
 
+// sobelStore computes the Sobel magnitude at the pixel whose three (clamped) row
+// bases are up/md/dn and whose three (clamped) column indices are xl/xc/xr, and
+// writes the grayscale result to dst. It is used for the clamp-addressed border
+// columns; the interior column loop is fully inlined for speed. The arithmetic
+// is identical to sobelGradients, so the output is byte-for-byte the same.
+func sobelStore(dst, src []uint8, lum []float64, up, md, dn, xl, xc, xr int) {
+	tl, tc, tr := lum[up+xl], lum[up+xc], lum[up+xr]
+	ml, mr := lum[md+xl], lum[md+xr]
+	bl, bc, br := lum[dn+xl], lum[dn+xc], lum[dn+xr]
+	gx := (tr - tl) + 2*(mr-ml) + (br - bl)
+	gy := (bl - tl) + 2*(bc-tc) + (br - tr)
+	m := ClampByte(math.Sqrt(gx*gx + gy*gy))
+	di := (md + xc) * 4
+	dst[di] = m
+	dst[di+1] = m
+	dst[di+2] = m
+	dst[di+3] = src[di+3]
+}
+
 // Sobel writes the Sobel gradient magnitude of src into dst. The operator is
 // applied to the per-pixel Rec. 601 luminance; the magnitude sqrt(gx^2+gy^2) is
 // clamped to [0, 255] and written to the R, G and B channels (a grayscale edge
 // map). Alpha is copied from the corresponding source pixel. Edges use
 // clamp-to-edge addressing. src and dst are RGBA slices of width*height pixels.
+//
+// Luminance is extracted once into a packed plane (lumaPlane) and the gradient
+// runs over that plane. The interior columns (1..width-2) need no boundary
+// clamping, so they run in a tight branch-free loop with the three row bases
+// hoisted out of the x-loop; only the four image borders pay for clamp-to-edge
+// addressing. This keeps the output identical to the naive per-pixel clampIndex
+// form while removing the four per-pixel clamps that made the operator branch-
+// and index-bound.
 func Sobel(dst, src []uint8, width, height int) {
 	lum := lumaPlane(src, width, height)
 	forLines(height, width, func(lo, hi int) {
 		for y := lo; y < hi; y++ {
-			for x := 0; x < width; x++ {
-				gx, gy := sobelGradients(lum, width, height, x, y)
+			up := clampIndex(y-1, height) * width
+			md := y * width
+			dn := clampIndex(y+1, height) * width
+			// Left border column (x==0); handles width==1 on its own.
+			sobelStore(dst, src, lum, up, md, dn, clampIndex(-1, width), 0, clampIndex(1, width))
+			// Interior columns: no clamping, direct neighbour indices.
+			for x := 1; x < width-1; x++ {
+				xl, xr := x-1, x+1
+				tl, tc, tr := lum[up+xl], lum[up+x], lum[up+xr]
+				ml, mr := lum[md+xl], lum[md+xr]
+				bl, bc, br := lum[dn+xl], lum[dn+x], lum[dn+xr]
+				gx := (tr - tl) + 2*(mr-ml) + (br - bl)
+				gy := (bl - tl) + 2*(bc-tc) + (br - tr)
 				m := ClampByte(math.Sqrt(gx*gx + gy*gy))
-				di := (y*width + x) * 4
+				di := (md + x) * 4
 				dst[di] = m
 				dst[di+1] = m
 				dst[di+2] = m
 				dst[di+3] = src[di+3]
+			}
+			// Right border column (x==width-1); skipped when width==1 (already
+			// written above) so no pixel is processed twice.
+			if width > 1 {
+				x := width - 1
+				sobelStore(dst, src, lum, up, md, dn, x-1, x, clampIndex(x+1, width))
 			}
 		}
 	})
