@@ -115,18 +115,23 @@ A rigorous parity benchmark against scikit-image 0.26 / scipy 1.18 and OpenCV
 Apple M4 Max:
 
 - **Wins** vs scikit-image: box blur **1.8–2.6×** (O(1) running-window sum),
-  RGB→HSV **~4.8×** (fused pass), flip **~2×**, and Gaussian **1.0–1.3×** — the
-  former Gaussian loss is now closed by the SIMD `axpy` separable convolution.
+  RGB→HSV **~4.8×** (fused pass), flip **~2×**, Gaussian **1.0–1.3×** (the
+  former Gaussian loss is now closed by the SIMD `axpy` separable convolution),
+  and Sobel **1.02–1.06×** (the former recompute-per-pixel loss is now closed
+  by a cached luminance plane and a branch-free interior run).
 - **Morphology — now at scikit-image parity.** The O(radius) fold was replaced
   with the **O(1) van Herk / Gil-Werman** running min/max, so erode/dilate are
   flat in radius and reach **parity → 1.02×** of scikit-image at 4096²
   single-thread (≈0.8× at small radius is a pure constant factor → SIMD).
-- **Gaps** vs scikit-image: Sobel at **~0.78×** — it still recomputes luminance
-  and the gradient magnitude per pixel; the fix (cached luminance plane,
-  vectorised magnitude) is in BENCHMARKS.md.
+- **Gaps** vs scikit-image: the residual single-thread gap (small-radius
+  morphology, and Rotate90/Crop/Otsu against a bare numpy view/copy or
+  histogram, which is not comparable per-pixel work) is now a pure constant
+  factor; closing it with go-asmgen SIMD across all six arches is
+  BENCHMARKS.md action item C.
 - **Multicore**: with all cores go-images is faster than single-threaded
-  scikit-image on **every** op (morphology now **4.8–7.8×**), but OpenCV's
-  O(1)+SIMD morphology is still far ahead — cores don't replace SIMD.
+  scikit-image on **every** op (morphology now **4.8–7.8×**, Sobel now
+  **4.2–4.8×**), but OpenCV's O(1)+SIMD morphology is still far ahead — cores
+  don't replace SIMD.
 
 Box blur and grayscale morphology match SciPy bit-for-bit; Gaussian within one
 LSB; every SIMD kernel is validated against its scalar oracle. See
