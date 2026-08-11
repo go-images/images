@@ -85,7 +85,11 @@ Morphology (grayscale square element, also binary on 0/255 images):
 
 Geometry:
 
-- `images.Resize(img, w, h, mode)` — `images.NearestNeighbor` or `images.Bilinear`
+- `images.Resize(img, w, h, mode)` — `images.NearestNeighbor`, `images.Bilinear` or `images.Area`
+  (area/box averaging: PIL `Image.BOX`, OpenCV `INTER_AREA`; at integer ratios,
+  scikit-image `downscale_local_mean`. The mode to reduce with — nearest keeps
+  one source pixel in sixteen when shrinking by four, and bilinear never looks
+  at more than four neighbours however far the image is shrunk.)
 - `images.FlipHorizontal(img)` / `images.FlipVertical(img)` — `numpy.fliplr` / `flipud`
 - `images.Rotate90(img)` / `images.Rotate180(img)` / `images.Rotate270(img)` — `numpy.rot90`
 - `images.Crop(img, image.Rect(x0, y0, x1, y1))`
