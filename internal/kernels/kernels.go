@@ -1504,6 +1504,109 @@ func ResizeNearest(dst, src []uint8, srcW, srcH, dstW, dstH int) {
 	}
 }
 
+// boxSpans precomputes, for each destination index, which source pixels it
+// overlaps and by how much. A destination pixel covers the source interval
+// [i*scale, (i+1)*scale), and a source pixel's weight is the length of that
+// interval falling inside it -- so the weights are coverage, not a kernel, and
+// they sum to the covered length whatever the ratio.
+//
+// starts[i] is the first source index, counts[i] how many, and weights holds
+// them consecutively in the same order.
+func boxSpans(srcN, dstN int) (starts, counts []int, weights []float64) {
+	scale := float64(srcN) / float64(dstN)
+	starts = make([]int, dstN)
+	counts = make([]int, dstN)
+	weights = make([]float64, 0, dstN+srcN)
+	for i := 0; i < dstN; i++ {
+		lo := float64(i) * scale
+		hi := lo + scale
+		// Both bounds are clamped without branching, which is not a
+		// micro-optimisation: as conditions they are unreachable on every ratio
+		// a test can express, so they would sit forever uncovered while still
+		// being the only thing standing between a float that overshoots srcN by
+		// one ulp and an out-of-range read. lo is never negative, so its floor
+		// needs no floor of its own.
+		i0 := int(math.Floor(lo))
+		i1 := max(min(int(math.Ceil(hi)), srcN), i0+1)
+		starts[i], counts[i] = i0, i1-i0
+		// Every j in [i0, i1) overlaps [lo, hi) by construction, so the weight
+		// is positive and needs no floor.
+		for j := i0; j < i1; j++ {
+			weights = append(weights, math.Min(hi, float64(j+1))-math.Max(lo, float64(j)))
+		}
+	}
+	return starts, counts, weights
+}
+
+// ResizeArea scales a srcW*srcH source into a dstW*dstH destination by area
+// (box) averaging: every destination pixel is the mean of the source region it
+// covers, each source pixel weighted by how much of it falls inside. This is
+// PIL's Image.BOX and OpenCV's INTER_AREA; at integer ratios it reduces to
+// scikit-image's downscale_local_mean, and when enlarging, each destination
+// pixel lies inside one source pixel and it reduces to nearest-neighbour.
+//
+// It is the mode to reduce with. Nearest-neighbour DISCARDS all but one source
+// pixel per destination pixel, so shrinking a photograph by four throws away
+// fifteen sixteenths of it and aliases whatever is left; the average keeps
+// every pixel's contribution.
+//
+// The two axes are separated -- horizontal into a float64 scratch, then
+// vertical -- so the cost is proportional to the pixels crossed rather than to
+// the product of the two box sizes. Channels are averaged independently, alpha
+// included, which is what both references do.
+func ResizeArea(dst, src []uint8, srcW, srcH, dstW, dstH int) {
+	xs, xc, xw := boxSpans(srcW, dstW)
+	ys, yc, yw := boxSpans(srcH, dstH)
+
+	tmp := make([]float64, srcH*dstW*4)
+	for y := 0; y < srcH; y++ {
+		srcRow, tmpRow, wi := y*srcW*4, y*dstW*4, 0
+		for x := 0; x < dstW; x++ {
+			var acc [4]float64
+			var sum float64
+			for k := 0; k < xc[x]; k++ {
+				w := xw[wi+k]
+				si := srcRow + (xs[x]+k)*4
+				acc[0] += float64(src[si]) * w
+				acc[1] += float64(src[si+1]) * w
+				acc[2] += float64(src[si+2]) * w
+				acc[3] += float64(src[si+3]) * w
+				sum += w
+			}
+			wi += xc[x]
+			ti := tmpRow + x*4
+			tmp[ti] = acc[0] / sum
+			tmp[ti+1] = acc[1] / sum
+			tmp[ti+2] = acc[2] / sum
+			tmp[ti+3] = acc[3] / sum
+		}
+	}
+
+	wi := 0
+	for y := 0; y < dstH; y++ {
+		dstRow := y * dstW * 4
+		for x := 0; x < dstW; x++ {
+			var acc [4]float64
+			var sum float64
+			for k := 0; k < yc[y]; k++ {
+				w := yw[wi+k]
+				ti := (ys[y]+k)*dstW*4 + x*4
+				acc[0] += tmp[ti] * w
+				acc[1] += tmp[ti+1] * w
+				acc[2] += tmp[ti+2] * w
+				acc[3] += tmp[ti+3] * w
+				sum += w
+			}
+			di := dstRow + x*4
+			dst[di] = ClampByte(acc[0] / sum)
+			dst[di+1] = ClampByte(acc[1] / sum)
+			dst[di+2] = ClampByte(acc[2] / sum)
+			dst[di+3] = ClampByte(acc[3] / sum)
+		}
+		wi += yc[y]
+	}
+}
+
 // ResizeBilinear scales a width*height source image into a dstW*dstH
 // destination using bilinear interpolation. Sample positions use the centre of
 // each destination pixel mapped back into source space.

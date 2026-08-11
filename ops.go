@@ -17,6 +17,18 @@ const (
 	// Bilinear linearly interpolates the four nearest source pixels. It is
 	// smoother than nearest-neighbour at the cost of more arithmetic.
 	Bilinear
+	// Area averages the source region each destination pixel covers, weighting
+	// every source pixel by how much of it falls inside. It is the mode to
+	// REDUCE with: nearest-neighbour discards all but one source pixel per
+	// destination pixel, so shrinking by four throws away fifteen sixteenths of
+	// the image and aliases what is left, while bilinear only ever looks at
+	// four neighbours however far the image is shrunk. Enlarging, where each
+	// destination pixel falls inside one source pixel, it reduces to
+	// nearest-neighbour.
+	//
+	// This is PIL's Image.BOX and OpenCV's INTER_AREA; at integer ratios it
+	// reduces to scikit-image's downscale_local_mean.
+	Area
 )
 
 // Grayscale returns a copy of img with every pixel replaced by its
@@ -71,6 +83,8 @@ func Resize(img image.Image, w, h int, mode ResizeMode) (*image.RGBA, error) {
 		kernels.ResizeNearest(dst.Pix, src.Pix, b.Dx(), b.Dy(), w, h)
 	case Bilinear:
 		kernels.ResizeBilinear(dst.Pix, src.Pix, b.Dx(), b.Dy(), w, h)
+	case Area:
+		kernels.ResizeArea(dst.Pix, src.Pix, b.Dx(), b.Dy(), w, h)
 	default:
 		return nil, fmt.Errorf("images: resize: unknown mode %d", mode)
 	}
