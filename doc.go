@@ -20,8 +20,9 @@
 // ICO and ICNS via the shared reference registry github.com/go-gfx/gfx/codec;
 // Encode writes PNG and JPEG.
 //
-// Phase 0 implements Grayscale, Invert, Resize (nearest-neighbour and
-// bilinear and area/box), Convolve (arbitrary odd-sized kernels with edge clamping),
+// Phase 0 implements Grayscale, Invert, Resize (nearest-neighbour, bilinear,
+// area/box, and the high-quality bicubic and Lanczos modes, all delegated to the
+// shared go-gfx/gfx/resample foundation), Convolve (arbitrary odd-sized kernels with edge clamping),
 // GaussianBlur (separable), AdjustBrightness and AdjustContrast.
 //
 // Phase 1 adds edge detection — Sobel (gradient magnitude) with SobelX/SobelY

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/go-gfx/gfx/resample"
 	"github.com/go-images/images/internal/kernels"
 )
 
@@ -29,6 +30,20 @@ const (
 	// This is PIL's Image.BOX and OpenCV's INTER_AREA; at integer ratios it
 	// reduces to scikit-image's downscale_local_mean.
 	Area
+	// Bicubic resamples with the Keys cubic (a = -1/2, the Catmull-Rom spline),
+	// a smooth four-tap kernel whose footprint widens with the reduction factor:
+	// sharper than Bilinear when enlarging and a proper antialiasing low-pass
+	// when reducing. It is Pillow's BICUBIC / x/image/draw's CatmullRom. The
+	// colour channels are filtered in premultiplied-alpha space so a transparent
+	// pixel's colour does not bleed into the visible edge of a cut-out; on a
+	// fully opaque image that is exactly the plain cubic. Higher quality than the
+	// three modes above, at more arithmetic.
+	Bicubic
+	// Lanczos resamples with the a = 3 windowed-sinc kernel: wider and sharper
+	// than Bicubic at more cost, the highest-fidelity mode in either direction.
+	// It is Pillow's LANCZOS / x/image/draw's Lanczos, and like Bicubic filters
+	// the colour channels in premultiplied-alpha space.
+	Lanczos
 )
 
 // Grayscale returns a copy of img with every pixel replaced by its
@@ -71,24 +86,45 @@ func AdjustContrast(img image.Image, factor float64) *image.RGBA {
 
 // Resize returns img scaled to w by h pixels using the given mode. It returns
 // an error if w or h is not positive.
+//
+// The resampling kernels live once, in go-gfx's resample package (the shared 2-D
+// foundation this library sits on); Resize delegates to them over a zero-copy
+// raster view of the source so no kernel is duplicated here. NearestNeighbor,
+// Bilinear and Area map to resample's Nearest, Bilinear and Box filtered in
+// straight-alpha space — proven byte-for-byte identical to the kernels this
+// library used to run (see resize_dedup_control_test.go) — while Bicubic and
+// Lanczos filter the colour channels in premultiplied-alpha space.
 func Resize(img image.Image, w, h int, mode ResizeMode) (*image.RGBA, error) {
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("images: resize: dimensions must be positive, got %dx%d", w, h)
 	}
-	src := ToRGBA(img)
-	b := src.Bounds()
-	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	src := AsRaster(ToRGBA(img))
+	// resize is the straight-alpha resampler for the three modes proven
+	// byte-identical to this library's former kernels; Bicubic and Lanczos swap
+	// it for the premultiplied-alpha variant. An unrecognised mode maps to an
+	// out-of-range resample mode so the single error check below rejects it,
+	// keeping mode validation in one place rather than duplicating resample's.
+	resize := resample.Resize
+	var rmode resample.Mode
 	switch mode {
 	case NearestNeighbor:
-		kernels.ResizeNearest(dst.Pix, src.Pix, b.Dx(), b.Dy(), w, h)
+		rmode = resample.Nearest
 	case Bilinear:
-		kernels.ResizeBilinear(dst.Pix, src.Pix, b.Dx(), b.Dy(), w, h)
+		rmode = resample.Bilinear
 	case Area:
-		kernels.ResizeArea(dst.Pix, src.Pix, b.Dx(), b.Dy(), w, h)
+		rmode = resample.Box
+	case Bicubic:
+		rmode, resize = resample.Bicubic, resample.ResizePremultiplied
+	case Lanczos:
+		rmode, resize = resample.Lanczos, resample.ResizePremultiplied
 	default:
-		return nil, fmt.Errorf("images: resize: unknown mode %d", mode)
+		rmode = resample.Mode(-1)
 	}
-	return dst, nil
+	out, err := resize(src, w, h, rmode)
+	if err != nil {
+		return nil, fmt.Errorf("images: resize: %w", err)
+	}
+	return AsRGBA(out), nil
 }
 
 // Kernel is a 2-D convolution kernel: Weights is a row-major slice of length
