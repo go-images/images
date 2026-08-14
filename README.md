@@ -8,8 +8,11 @@
 [![Status](https://img.shields.io/badge/status-phase%202-9a6700)](docs/plan-images.md)
 
 **A pure-Go (no cgo) image-processing library** in the style of
-[scikit-image](https://scikit-image.org/), built entirely on the Go standard
-library's `image`, `image/color`, `image/png` and `image/jpeg` packages.
+[scikit-image](https://scikit-image.org/), built on the Go standard library's
+`image`, `image/color`, `image/png` and `image/jpeg` packages, with decoding of
+six further container formats (GIF, WebP, TIFF, BMP, ICO, ICNS) delegated to the
+shared reference registry [`go-gfx/gfx/codec`](https://github.com/go-gfx/gfx) —
+still entirely CGO-free.
 
 Every operation is a pure function: it takes an image and returns a freshly
 allocated `*image.RGBA`, never mutating its input.
@@ -46,7 +49,8 @@ Conversion and I/O:
 - `images.ToRGBA(img image.Image) *image.RGBA`
 - `images.Load(path string) (*image.RGBA, error)`
 - `images.Save(path string, img image.Image) error` — format by extension (`.png`, `.jpg`, `.jpeg`)
-- `images.Decode(r io.Reader) (*image.RGBA, error)` — format auto-detected
+- `images.Decode(r io.Reader) (*image.RGBA, error)` — format auto-detected (PNG, JPEG, GIF, WebP, TIFF, BMP, ICO, ICNS)
+- `images.DecodeBest(r io.Reader, targetSize int) (*image.RGBA, error)` — like `Decode`, but picks the representation nearest `targetSize` for multi-image containers (ICO, ICNS)
 - `images.Encode(w io.Writer, img image.Image, format images.Format) error` — `images.PNG`, `images.JPEG`
 
 Operations (each returns a new `*image.RGBA`):
