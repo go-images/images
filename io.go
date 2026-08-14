@@ -1,6 +1,7 @@
 package images
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/go-gfx/gfx/codec"
 )
 
 // Format identifies an encodable image format.
@@ -24,14 +27,90 @@ const (
 // jpegQuality is the quality used when encoding JPEG output.
 const jpegQuality = 90
 
-// Decode reads an image from r, auto-detecting the format among the registered
-// decoders (PNG and JPEG). It returns the decoded image converted to *image.RGBA.
+// Decode reads an image from r, auto-detecting the container format from its
+// magic bytes, and returns it converted to *image.RGBA.
+//
+// Eight formats are recognised. PNG and JPEG are decoded by the standard library
+// exactly as before — this path is byte-for-byte unchanged. The six additional
+// formats (GIF, WebP, TIFF, BMP, ICO, ICNS) are delegated to the shared reference
+// registry github.com/go-gfx/gfx/codec, which reimplements no decoder and hands
+// each container to a battle-tested pure-Go (CGO-free) library. For the
+// multi-representation containers (ICO, ICNS) the largest representation is
+// returned; use [DecodeBest] to target a pixel size.
+//
+// Alpha convention: every source is brought into this package under the same
+// premultiplied-at-input convention that [ToRGBA] already applies to any
+// non-*image.RGBA source. codec returns straight (non-premultiplied) alpha, so
+// its output is routed back through [ToRGBA] to premultiply, keeping the whole
+// library's decoded bytes consistent regardless of container format.
 func Decode(r io.Reader) (*image.RGBA, error) {
-	img, _, err := image.Decode(r)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("images: decode: %w", err)
+	}
+	return decodeBytes(data, 0)
+}
+
+// DecodeBest is [Decode] with a target pixel size for the multi-representation
+// containers (ICO, ICNS): among their stored representations it selects the one
+// whose longer side is the smallest that is still at least targetSize, falling
+// back to the largest when none reaches it. A targetSize <= 0 selects the
+// largest, making it identical to [Decode]. targetSize is ignored for
+// single-image formats. The result is a premultiplied *image.RGBA, exactly as
+// from [Decode].
+func DecodeBest(r io.Reader, targetSize int) (*image.RGBA, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("images: decode: %w", err)
+	}
+	return decodeBytes(data, targetSize)
+}
+
+// decodeBytes dispatches an already-buffered image on its sniffed format. PNG and
+// JPEG keep the historical standard-library path unchanged (byte-identical); all
+// other recognised formats go through the go-gfx codec registry and are
+// premultiplied to match this package's input convention.
+func decodeBytes(data []byte, targetSize int) (*image.RGBA, error) {
+	switch codec.Sniff(data) {
+	case codec.PNG:
+		return decodeStd(png.Decode, data)
+	case codec.JPEG:
+		return decodeStd(jpeg.Decode, data)
+	default:
+		return decodeViaCodec(data, targetSize)
+	}
+}
+
+// decodeStd runs a standard-library single-image decoder over data and converts
+// the result with [ToRGBA]. This reproduces the pre-existing
+// image.Decode+ToRGBA behaviour for PNG and JPEG exactly: image.Decode dispatches
+// a matched PNG/JPEG signature to precisely png.Decode / jpeg.Decode, and ToRGBA
+// is applied identically — so the returned pixels are byte-for-byte unchanged.
+func decodeStd(dec func(io.Reader) (image.Image, error), data []byte) (*image.RGBA, error) {
+	img, err := dec(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("images: decode: %w", err)
 	}
 	return ToRGBA(img), nil
+}
+
+// decodeViaCodec decodes the six non-PNG/JPEG formats through the go-gfx codec
+// registry. codec yields a straight-alpha raster whose byte layout is identical
+// to image.NRGBA (dense, origin-anchored, straight R,G,B,A). Viewing it as an
+// NRGBA and running it through [ToRGBA] premultiplies it exactly as ToRGBA
+// premultiplies any NRGBA source, so a decoded transparent pixel obeys the same
+// convention as a transparent PNG decoded by the standard-library path.
+func decodeViaCodec(data []byte, targetSize int) (*image.RGBA, error) {
+	rimg, err := codec.DecodeBest(data, targetSize)
+	if err != nil {
+		return nil, fmt.Errorf("images: decode: %w", err)
+	}
+	nrgba := &image.NRGBA{
+		Pix:    rimg.Pix,
+		Stride: 4 * rimg.W,
+		Rect:   image.Rect(0, 0, rimg.W, rimg.H),
+	}
+	return ToRGBA(nrgba), nil
 }
 
 // Encode writes img to w in the given format.
