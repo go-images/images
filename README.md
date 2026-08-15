@@ -64,6 +64,26 @@ Point & colour:
 - `images.RGBToHSV(img)` / `images.HSVToRGB(img)` — byte-encoded, round-trip-stable
 - `images.OtsuThreshold(img)` — Otsu level (matches `skimage.filters.threshold_otsu`)
 - `images.Threshold(img, t)` / `images.Otsu(img)` — binarise on luminance
+- `images.AdjustGamma(img, gamma)` — power-law gamma correction (matches
+  `skimage.exposure.adjust_gamma`, byte-for-byte)
+
+Colour science (CIE, D65) — the conversions `skimage.color` exposes, using
+scikit-image's exact matrices and reference white so the results match it to
+floating-point precision (and byte-for-byte after quantisation):
+
+- `images.RGBToXYZ(img)` / `images.XYZToRGB(c)` — sRGB ↔ CIE XYZ
+  (`skimage.color.rgb2xyz` / `xyz2rgb`)
+- `images.RGBToLab(img)` / `images.LabToRGB(c)` — sRGB ↔ CIELAB
+  (`skimage.color.rgb2lab` / `lab2rgb`)
+- `images.SRGBToLinear(c)` / `images.LinearToSRGB(c)` — the sRGB (de)companding
+  transfer functions on a single channel
+- `images.DeltaE76(a, b)` — per-pixel CIE76 colour difference
+  (`skimage.color.deltaE_cie76`)
+
+  The float colour spaces are carried in an `images.ChannelImage` (a dense
+  H×W×3 `float64` buffer), mirroring scikit-image's `H×W×3` arrays. These
+  conversions operate on the three colour channels; the image-returning
+  inverses (`XYZToRGB`, `LabToRGB`) produce an opaque result.
 
 Filters:
 

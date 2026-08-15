@@ -149,6 +149,33 @@ parallel thresholds (`separable_test.go`).
   vector-double in the Go assembler / faulting qemu V), relying on multicore
   tiling alone for the speed-up. They are validated on the per-arch qemu CI job.
 
+## Colour science (CIE conversions)
+
+The `skimage.color` conversions — sRGB ↔ XYZ, sRGB ↔ CIELAB, the sRGB
+(de)companding, `adjust_gamma`, and the CIE76 difference — are **scalar**, not
+SIMD. Each output channel is a 3×3 matrix row plus a `pow`-based companding; the
+hot operation is the transcendental `pow`, for which the Go assembler exposes no
+vector primitive in this project's go-asmgen setup (the same reason box blur and
+Sobel stay scalar). They parallelise trivially per pixel, so multicore tiling is
+the available lever; a SIMD `pow` is not.
+
+The value here is **numerical parity**, and it is exact. Measured against
+scikit-image 0.26 over a 64×64 xorshift pixel sweep (both stacks, same input):
+
+| Conversion            | metric                | max difference vs scikit-image |
+|-----------------------|-----------------------|-------------------------------:|
+| `RGBToLab`            | L\*a\*b\* value       | **1.1e-13** (float noise) |
+| `RGBToXYZ`            | XYZ value             | **2.2e-16** (machine ε) |
+| `LabToRGB(RGBToLab)`  | round-trip byte       | **0** (byte-exact) |
+| `XYZToRGB(RGBToXYZ)`  | round-trip byte       | **0** (byte-exact) |
+| `AdjustGamma` (γ=2.2, 0.5) | output byte      | **0** (byte-exact) |
+
+The byte-exactness comes from using scikit-image's exact matrices and D65
+reference white, and its round-half-to-even quantisation (`numpy.rint`) rather
+than round-half-up. The committed suite pins these against reference tuples
+captured from scikit-image, so parity is proven in CI without a Python
+dependency; the sweep above is the live control run.
+
 ## Reproducing
 
 ```sh
