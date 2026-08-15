@@ -13,6 +13,21 @@ import (
 // numerical constants — the RGB<->XYZ matrices and the D65 reference white — are
 // exactly those scikit-image uses, so the results match it to floating-point
 // precision (and byte-for-byte after the same round-half-to-even quantisation).
+//
+// Relationship to go-gfx/gfx/color (the 2-D graphics foundation this module
+// otherwise builds on for codec/resample): that package also offers sRGB<->XYZ
+// <->Lab, but it is deliberately the *textbook* sRGB/CIE model — the high-
+// precision sRGB D65 matrix (0.4124564...), the exact 6/29 Lab break point, and
+// no clipping — which is right for rendering. scikit-image uses a *different*
+// numeric contract: the older xyz_from_rgb matrix (0.412453...), the rounded Lab
+// constants (7.787, 16/116, 0.2068966), a reference white that differs slightly
+// from the matrix's own row sums, and a clip of a negative f-space Z. A control
+// run confirms the two diverge (e.g. pure red -> Lab differs by ~4e-4, and pure
+// white maps to scikit-image's quirky (100, -0.0025, 0.0047) rather than the
+// neutral (100, ~0, ~0) go-gfx produces). Since go-images' whole promise is
+// byte-for-byte scikit-image parity, delegating here would break it; so this
+// module keeps the scikit-image-exact constants locally. It is a distinct
+// contract, not duplicated foundation work.
 
 // ChannelImage is a dense H-by-W image of three float64 channels stored
 // interleaved (three values per pixel, row-major). It carries the colour spaces
