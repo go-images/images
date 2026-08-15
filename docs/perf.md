@@ -149,6 +149,38 @@ parallel thresholds (`separable_test.go`).
   vector-double in the Go assembler / faulting qemu V), relying on multicore
   tiling alone for the speed-up. They are validated on the per-arch qemu CI job.
 
+## Arbitrary rotation & affine warp
+
+`Rotate` and `Warp` are a per-output-pixel gather: apply the inverse affine map,
+then sample the input (nearest or bilinear). This is not a separable kernel and
+the interpolation is memory-bound scatter/gather with no vector primitive in the
+go-asmgen set, so it stays **scalar** (the same reason box blur and Sobel do);
+it parallelises per output row if a multicore pass is ever wanted.
+
+The deliverable is **parity with scikit-image**, measured against
+scikit-image 0.26 (`skimage.transform.rotate` / `warp`, `clip=False`):
+
+| Operation                          | max \|Δ\| vs scikit-image |
+|------------------------------------|--------------------------:|
+| `Rotate` (0/17/30/45/90/-22.5°, resize on & off) | **0** (byte-exact) |
+| `Warp`, bilinear, affine matrices  | **1** (single-pixel 0.5 ties only) |
+| `Warp`, nearest (order 0)          | **0** (byte-exact) |
+| `Warp`, `BorderConstant` / `BorderEdge` | as above |
+
+Byte-exactness comes from matching scikit-image's conventions precisely: the
+affine matrix maps output `(col,row)` → input `(col,row)`; nearest rounds half
+away from zero (its libc `round`); bilinear normalises to `[0,1]` before
+weighting (its float pipeline) and quantises with round-half-to-even; and the
+output is *not* clamped to the input range (`clip=False`). The residual `Δ=1`
+on a general affine is a single pixel that lands on an exact `x.5` quantisation
+tie, where scikit-image's accumulated float sits one ULP the other side — the
+same "1 LSB, rounding only" floor as the Gaussian above. `Rotate`, whose matrix
+is a rigid motion, is byte-exact across every angle tested.
+
+The committed suite pins these against reference tuples captured from
+scikit-image (parity holds in CI with no Python dependency) and additionally
+checks `Warp` against an independent in-test bilinear/nearest oracle.
+
 ## Reproducing
 
 ```sh

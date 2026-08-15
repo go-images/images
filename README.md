@@ -117,6 +117,17 @@ Geometry:
   Pillow's `ImageOps.exif_transpose`. The orientation tag is read from a JPEG's
   APP1/Exif segment (or a bare TIFF) with a minimal in-package reader; an absent
   or invalid tag is treated as "normal" and the image is returned unrotated.
+- `images.Rotate(img, angleDegrees, resize)` — arbitrary-angle rotation about the
+  centre, bilinear, matching `skimage.transform.rotate` (byte-for-byte;
+  `resize=true` grows the canvas to fit, sized exactly as scikit-image does)
+- `images.Warp(img, inv, outW, outH, interp, mode, cval)` — general affine
+  resampling, matching `skimage.transform.warp` (`clip=False`). `inv` is an
+  `images.Affine` mapping output `(col,row)` to input `(col,row)` — the inverse
+  of the transform being applied, exactly as scikit-image's `warp` takes an
+  inverse map. `interp` is `InterpNearest` (order 0) or `InterpBilinear`
+  (order 1); `mode` is `BorderConstant` (fill with `cval`) or `BorderEdge`.
+  Build transforms with `images.Identity/Translation/Scaling/Rotation` and
+  compose them with `.Then(...)`; invert with `.Invert()`.
 
 ### Example
 
