@@ -108,7 +108,15 @@ Geometry:
   kernels this library previously carried (see `resize_dedup_control_test.go`).
 - `images.FlipHorizontal(img)` / `images.FlipVertical(img)` — `numpy.fliplr` / `flipud`
 - `images.Rotate90(img)` / `images.Rotate180(img)` / `images.Rotate270(img)` — `numpy.rot90`
+- `images.Transpose(img)` / `images.Transverse(img)` — reflections across the main
+  and anti-diagonal (PIL `Image.TRANSPOSE` / `Image.TRANSVERSE`)
 - `images.Crop(img, image.Rect(x0, y0, x1, y1))`
+- `images.ExifTranspose(img, orientation)` and the auto-orienting decoders
+  `images.DecodeExifTranspose(r)` / `images.LoadExifTranspose(path)` — apply the
+  eight EXIF orientations so a photo displays the right way up, the geometry of
+  Pillow's `ImageOps.exif_transpose`. The orientation tag is read from a JPEG's
+  APP1/Exif segment (or a bare TIFF) with a minimal in-package reader; an absent
+  or invalid tag is treated as "normal" and the image is returned unrotated.
 
 ### Example
 

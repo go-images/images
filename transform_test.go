@@ -86,6 +86,68 @@ func TestRotate270(t *testing.T) {
 	}
 }
 
+func TestTranspose(t *testing.T) {
+	// 3x2 source -> 2x3 result. Source (x,y) reflects across the main diagonal
+	// to dst (y, x).
+	src := distinct(3, 2)
+	out := Transpose(src)
+	if b := out.Bounds(); b.Dx() != 2 || b.Dy() != 3 {
+		t.Fatalf("transpose bounds %v, want 2x3", b)
+	}
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 3; x++ {
+			if px(out, y, x) != px(src, x, y) {
+				t.Fatalf("transpose source %d,%d misplaced", x, y)
+			}
+		}
+	}
+}
+
+func TestTransverse(t *testing.T) {
+	// 3x2 source -> 2x3 result. Source (x,y) reflects across the anti-diagonal
+	// to dst (h-1-y, w-1-x), w=3, h=2.
+	src := distinct(3, 2)
+	out := Transverse(src)
+	if b := out.Bounds(); b.Dx() != 2 || b.Dy() != 3 {
+		t.Fatalf("transverse bounds %v, want 2x3", b)
+	}
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 3; x++ {
+			if px(out, 1-y, 2-x) != px(src, x, y) {
+				t.Fatalf("transverse source %d,%d misplaced", x, y)
+			}
+		}
+	}
+}
+
+func TestTransposeIsInvolution(t *testing.T) {
+	// Transposing twice returns the original.
+	src := distinct(4, 3)
+	out := Transpose(Transpose(src))
+	if b := out.Bounds(); b.Dx() != 4 || b.Dy() != 3 {
+		t.Fatalf("double transpose bounds %v, want 4x3", b)
+	}
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			if px(out, x, y) != px(src, x, y) {
+				t.Fatalf("double transpose changed %d,%d", x, y)
+			}
+		}
+	}
+}
+
+func TestTransverseIsInvolution(t *testing.T) {
+	src := distinct(4, 3)
+	out := Transverse(Transverse(src))
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			if px(out, x, y) != px(src, x, y) {
+				t.Fatalf("double transverse changed %d,%d", x, y)
+			}
+		}
+	}
+}
+
 func TestRotate90ComposesTo360(t *testing.T) {
 	// Four 90-degree rotations return to the original.
 	src := distinct(4, 3)

@@ -57,6 +57,29 @@ func Rotate270(img image.Image) *image.RGBA {
 	return dst
 }
 
+// Transpose returns img reflected across its main diagonal (top-left to
+// bottom-right): pixel (x, y) becomes (y, x). A w-by-h image becomes h-by-w.
+// It matches PIL Image.TRANSPOSE and is the geometry of EXIF orientation 5.
+func Transpose(img image.Image) *image.RGBA {
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, b.Dy(), b.Dx()))
+	kernels.Transpose(dst.Pix, src.Pix, b.Dx(), b.Dy())
+	return dst
+}
+
+// Transverse returns img reflected across its anti-diagonal (top-right to
+// bottom-left): pixel (x, y) becomes (h-1-y, w-1-x). A w-by-h image becomes
+// h-by-w. It matches PIL Image.TRANSVERSE and is the geometry of EXIF
+// orientation 7.
+func Transverse(img image.Image) *image.RGBA {
+	src := ToRGBA(img)
+	b := src.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, b.Dy(), b.Dx()))
+	kernels.Transverse(dst.Pix, src.Pix, b.Dx(), b.Dy())
+	return dst
+}
+
 // Crop returns the rectangular region r of img as a new image anchored at the
 // origin. r is interpreted in the coordinate system of img converted to RGBA
 // (origin at the top-left). It returns an error if r is empty or extends outside
