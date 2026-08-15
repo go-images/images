@@ -12,7 +12,11 @@
 // behind these same function signatures without touching the public API.
 package kernels
 
-import "math"
+import (
+	"math"
+
+	"github.com/go-gfx/gfx/color"
+)
 
 // ClampByte rounds and clamps a floating-point intensity to the [0, 255] range
 // representable by a single 8-bit channel.
@@ -1323,83 +1327,37 @@ func Threshold(dst, src []uint8, t uint8) {
 // rounded), S and V are scaled from [0,1] to [0,255]. Alpha is preserved. This
 // byte-encoded HSV is a lossy but reversible-within-rounding representation
 // convenient for an RGBA-backed pipeline.
+//
+// The sRGB→HSV colour-space geometry lives once, in go-gfx's shared colour layer
+// ([color.SRGBToHSV]); only the byte packing of the result — a convention private
+// to this RGBA-backed pipeline — is applied here. The two together are proven
+// byte-for-byte identical to the hand-rolled conversion this kernel used to run
+// (see hsv_parity_test.go).
 func RGBToHSV(dst, src []uint8) {
 	for i := 0; i < len(src); i += 4 {
-		r := float64(src[i]) / 255
-		g := float64(src[i+1]) / 255
-		b := float64(src[i+2]) / 255
-		max := r
-		if g > max {
-			max = g
-		}
-		if b > max {
-			max = b
-		}
-		min := r
-		if g < min {
-			min = g
-		}
-		if b < min {
-			min = b
-		}
-		v := max
-		delta := max - min
-		var s float64
-		if max > 0 {
-			s = delta / max
-		}
-		var hue float64
-		if delta > 0 {
-			switch max {
-			case r:
-				hue = (g - b) / delta
-			case g:
-				hue = 2 + (b-r)/delta
-			default:
-				hue = 4 + (r-g)/delta
-			}
-			hue *= 60
-			if hue < 0 {
-				hue += 360
-			}
-		}
-		dst[i] = ClampByte(hue * 255 / 360)
-		dst[i+1] = ClampByte(s * 255)
-		dst[i+2] = ClampByte(v * 255)
+		hsv := color.SRGBToHSV(float64(src[i])/255, float64(src[i+1])/255, float64(src[i+2])/255)
+		dst[i] = ClampByte(hsv.H * 255 / 360)
+		dst[i+1] = ClampByte(hsv.S * 255)
+		dst[i+2] = ClampByte(hsv.V * 255)
 		dst[i+3] = src[i+3]
 	}
 }
 
 // HSVToRGB is the inverse of RGBToHSV: it interprets the first three channels of
 // src as byte-encoded H, S, V (H in [0,255] mapping to [0,360), S and V in
-// [0,255] mapping to [0,1]) and writes R, G, B into dst. Alpha is preserved.
+// [0,255] mapping to [0,1]) and writes R, G, B into dst. Alpha is preserved. The
+// HSV→sRGB geometry is go-gfx's shared [color.HSVToSRGB]; only the byte
+// unpacking/packing is done here.
 func HSVToRGB(dst, src []uint8) {
 	for i := 0; i < len(src); i += 4 {
-		h := float64(src[i]) / 255 * 360
-		s := float64(src[i+1]) / 255
-		v := float64(src[i+2]) / 255
-		c := v * s
-		hp := h / 60
-		x := c * (1 - math.Abs(math.Mod(hp, 2)-1))
-		var r, g, b float64
-		switch int(hp) % 6 {
-		case 0:
-			r, g, b = c, x, 0
-		case 1:
-			r, g, b = x, c, 0
-		case 2:
-			r, g, b = 0, c, x
-		case 3:
-			r, g, b = 0, x, c
-		case 4:
-			r, g, b = x, 0, c
-		default:
-			r, g, b = c, 0, x
-		}
-		m := v - c
-		dst[i] = ClampByte((r + m) * 255)
-		dst[i+1] = ClampByte((g + m) * 255)
-		dst[i+2] = ClampByte((b + m) * 255)
+		r, g, b := color.HSVToSRGB(color.HSV{
+			H: float64(src[i]) / 255 * 360,
+			S: float64(src[i+1]) / 255,
+			V: float64(src[i+2]) / 255,
+		})
+		dst[i] = ClampByte(r * 255)
+		dst[i+1] = ClampByte(g * 255)
+		dst[i+2] = ClampByte(b * 255)
 		dst[i+3] = src[i+3]
 	}
 }
