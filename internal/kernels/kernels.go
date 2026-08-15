@@ -1468,6 +1468,38 @@ func Rotate270(dst, src []uint8, width, height int) {
 	}
 }
 
+// Transpose reflects src across its main diagonal (top-left to bottom-right):
+// source pixel (x, y) maps to destination (y, x). The source is width*height;
+// the destination is height*width. This is the geometry of EXIF orientation 5
+// and of numpy.transpose over the first two axes / PIL Image.TRANSPOSE.
+func Transpose(dst, src []uint8, width, height int) {
+	dstW := height
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			si := (y*width + x) * 4
+			di := (x*dstW + y) * 4
+			copyPixel(dst, di, src, si)
+		}
+	}
+}
+
+// Transverse reflects src across its anti-diagonal (top-right to bottom-left):
+// source pixel (x, y) maps to destination (height-1-y, width-1-x). The source
+// is width*height; the destination is height*width. This is the geometry of
+// EXIF orientation 7 / PIL Image.TRANSVERSE.
+func Transverse(dst, src []uint8, width, height int) {
+	dstW := height
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			si := (y*width + x) * 4
+			dx := height - 1 - y
+			dy := width - 1 - x
+			di := (dy*dstW + dx) * 4
+			copyPixel(dst, di, src, si)
+		}
+	}
+}
+
 // Crop copies the rectangle of size cw*ch whose top-left corner is at (ox, oy)
 // in the width*height source into dst (a cw*ch RGBA slice). The caller is
 // responsible for validating that the rectangle lies within the source.
