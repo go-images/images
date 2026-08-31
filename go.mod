@@ -3,7 +3,7 @@ module github.com/go-images/images
 go 1.26.4
 
 require (
-	github.com/go-gfx/gfx v0.16.0
+	github.com/go-gfx/gfx v0.19.0
 	github.com/sergeymakinen/go-ico v1.0.0
 	golang.org/x/image v0.45.0
 )
