@@ -4,6 +4,9 @@ go 1.26.4
 
 require (
 	github.com/go-gfx/gfx v0.26.0
+	github.com/go-images/gif v0.1.0
+	github.com/go-images/jpeg v0.2.0
+	github.com/go-images/png v0.1.0
 	github.com/sergeymakinen/go-ico v1.0.0
 	golang.org/x/image v0.46.0
 )

@@ -52,6 +52,41 @@ Conversion and I/O:
 - `images.Decode(r io.Reader) (*image.RGBA, error)` — format auto-detected (PNG, JPEG, GIF, WebP, TIFF, BMP, ICO, ICNS)
 - `images.DecodeBest(r io.Reader, targetSize int) (*image.RGBA, error)` — like `Decode`, but picks the representation nearest `targetSize` for multi-image containers (ICO, ICNS)
 - `images.Encode(w io.Writer, img image.Image, format images.Format) error` — `images.PNG`, `images.JPEG`
+- `images.DecodePartial(r io.Reader) (*image.RGBA, int, error)` — an image that may still be arriving: the picture at full size and how many rows of it are real
+- `images.DecodePartialFile(path string) (*image.RGBA, int, error)` — the same, on a file being written
+
+### Decoding a picture that is still arriving
+
+Every standard decoder is all-or-nothing, which for a file still arriving is the
+same as having nothing. Measured on a real photograph truncated at three
+fractions, `image/jpeg`, `image/png` and `image/gif` each returned a nil image
+and an error **every time**, with three quarters of the picture on disk.
+
+```go
+img, rows, err := images.DecodePartial(r)
+// draw img's first `rows` rows; err says what stopped the decode
+```
+
+Rows past the count hold whatever the image was allocated with. The error comes
+back with the picture and is nil only when everything arrived, in which case the
+count is every row.
+
+Three of the eight formats can answer, through forks of the standard decoders
+that keep what they decoded:
+[png](https://github.com/go-images/png),
+[jpeg](https://github.com/go-images/jpeg),
+[gif](https://github.com/go-images/gif) (its first frame). Each refuses some
+shapes of its own — an interlaced PNG or GIF, a progressive or CMYK JPEG — for
+reasons stated where the refusal is made.
+
+The other five say so and name themselves. **WebP** is the one that could not be
+forked the same way: its frame is a VP8 keyframe, decoded as a whole rather than
+row by row, so there is no partial state to hand back.
+
+One divergence worth knowing: on a *complete* file `DecodePartial` returns the
+fork's decode, and for a four-component JPEG that differs from `Decode` — the
+fork upsamples chroma the way libjpeg does. `Decode`'s standard-library path is
+untouched.
 
 Operations (each returns a new `*image.RGBA`):
 
