@@ -16,9 +16,10 @@
 //
 //	vminNEON / vmaxNEON(dst, src *float64, n int)
 //	  dst[i] = min/max(dst[i], src[i]) for i in [0,n), the morphology per-window
-//	  reduction. Go's arm64 assembler exposes NO vector double FMIN/FMAX
-//	  mnemonic, so the 2-lane reduction is emitted as the raw FMIN.2D / FMAX.2D
-//	  instruction word (encoding verified empirically on arm64 hardware). On the
+//	  reduction. The 2-lane reduction uses the vector double VFMIN / VFMAX
+//	  mnemonics (FMIN.2D / FMAX.2D), which the Go arm64 assembler accepts since
+//	  Go 1.27; they assemble to the same instruction words this file used to
+//	  hand-encode (0x4EE2F400 / 0x4E62F400 for V0 = op(V0, V2)). On the
 //	  finite, uint8-derived values morphology runs on, FMIN/FMAX match the scalar
 //	  `if` oracle bit-for-bit (no NaN / signed-zero cases).
 package main
@@ -34,10 +35,8 @@ import (
 func main() {
 	f := emit.NewFile("arm64")
 	f.Add(axpyKernel())
-	// FMIN.2D Vd=V0,Vn=V0,Vm=V1 -> 0x4EE0F400 | Rm<<16 | Rn<<5 | Rd.
-	f.Add(minmaxKernel("vminNEON", 0x4EE0F400, "FMIN"))
-	// FMAX.2D base 0x4E60F400.
-	f.Add(minmaxKernel("vmaxNEON", 0x4E60F400, "FMAX"))
+	f.Add(minmaxKernel("vminNEON", "FMIN"))
+	f.Add(minmaxKernel("vmaxNEON", "FMAX"))
 	if err := os.WriteFile("simd_arm64.s", []byte(f.String()), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -90,9 +89,9 @@ func axpyKernel() *emit.Function {
 }
 
 // minmaxKernel builds vminNEON / vmaxNEON(dst, src *float64, n int): dst[i] =
-// op(dst[i], src[i]). word is the raw FMIN/FMAX.2D base encoding; scalarMn is
-// the scalar (single-double) mnemonic FMIND/FMAXD for the tail.
-func minmaxKernel(name string, word uint32, op string) *emit.Function {
+// op(dst[i], src[i]). op is FMIN or FMAX: the vector body uses VFMIN/VFMAX on
+// D2 arrangements and the scalar tail uses FMIND/FMAXD.
+func minmaxKernel(name, op string) *emit.Function {
 	sig := arm64.Layout(
 		[]string{"dst", "src", "n"},
 		[]arm64.Type{arm64.Ptr, arm64.Ptr, arm64.Int64},
@@ -100,8 +99,8 @@ func minmaxKernel(name string, word uint32, op string) *emit.Function {
 	)
 	// dst pair loads into V0,V1 (contiguous); src pair into V2,V3 (contiguous).
 	// V0 = op(V0, V2): Rm=2,Rn=0,Rd=0. V1 = op(V1, V3): Rm=3,Rn=1,Rd=1.
-	vec0 := fmt.Sprintf("WORD $0x%08X", word|(2<<16)|(0<<5)|0)
-	vec1 := fmt.Sprintf("WORD $0x%08X", word|(3<<16)|(1<<5)|1)
+	vec0 := "V" + op + " V2.D2, V0.D2, V0.D2"
+	vec1 := "V" + op + " V3.D2, V1.D2, V1.D2"
 	b := arm64.NewFunc(name, sig, 0)
 	b.LoadArg("dst", "R0").
 		LoadArg("src", "R1").
