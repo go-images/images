@@ -42,8 +42,8 @@ The hot separable kernels now run **SIMD inner loops + multicore tiling**:
 
 SIMD coverage by architecture (the multi-arch story `go-fft` / `go-ndarray`
 document): **amd64 SSE2**, **arm64 NEON** (the axpy uses VFMLA; the vector
-double FMIN/FMAX, which the Go assembler has no mnemonic for, are emitted as the
-raw instruction word, encoding verified on hardware), and **s390x z/vector**
+double min/max uses the VFMIN/VFMAX mnemonics the Go assembler accepts since
+Go 1.27), and **s390x z/vector**
 (VFMADB + VFMINDB/VFMAXDB — big-endian, but these elementwise kernels are
 lane-order-independent; operand order verified under qemu-s390x). On **loong64 /
 ppc64le / riscv64** the Go assembler exposes no usable vector-double arithmetic
