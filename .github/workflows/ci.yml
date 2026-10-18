@@ -27,6 +27,22 @@ jobs:
       - run: go version
       - run: go vet ./...
       - run: go build ./...
+
+      # ⛔ THE BENCHMARKS MODULE IS NOT IN `./...`, which is deliberate -- it
+      # is nested so the harness never affects the 100% coverage gate below --
+      # and the cost was that nothing compiled it. Measured on 2026-10-18
+      # across this fleet: of seventeen repositories with a nested
+      # `benchmarks` module that no lane builds, SIX did not compile at
+      # origin/main, this one among them, on a stale go.sum. Renovate updates
+      # the parent module and leaves the nested one behind, and nothing was
+      # watching the result.
+      #
+      # `go vet` rather than `go test`: a benchmark harness is a main package,
+      # and running it on a shared runner would measure the runner. Whether it
+      # compiles is the question.
+      - name: Vet the benchmarks module
+        working-directory: benchmarks
+        run: go vet ./...
       - name: Test + 100% coverage gate
         shell: bash
         run: |
