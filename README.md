@@ -41,8 +41,22 @@ comparison.
 ## API
 
 ```go
-import "github.com/go-images/images"
+import "github.com/go-images/images"     // operations + file I/O (links every decoder)
+import "github.com/go-images/images/ops" // operations only, no codec
 ```
+
+### Only processing pixels? Import `ops`
+
+Every pixel operation below lives in the codec-free subpackage
+[`ops`](ops/doc.go); package `images` forwards each one under the same name and
+adds the I/O. The split exists for the linker: each decoder registers itself
+with `image.RegisterFormat` in an `init` function, and the Go linker keeps
+whatever a reachable `init` reaches, so importing `images` links JPEG 2000,
+JBIG2, TIFF, WebP, BMP, ICO, GIF, PNG and JPEG decoders even in a program that
+never reads a file. Measured on a `GOOS=js GOARCH=wasm` program that draws one
+go-widgets label: those decoders were about 1.7 MB of its 7 MB of code. A
+program that only resizes, blurs or transforms should import `ops`
+(`ops.GaussianBlur`, `ops.Resize`, …); `TestOpsLinksNoCodec` keeps it that way.
 
 Conversion and I/O:
 
