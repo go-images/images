@@ -42,6 +42,12 @@
 // and grey_dilation) and the derived Open and Close. On binary 0/255 images
 // these reduce to ordinary binary morphology.
 //
+// The operations are implemented in the codec-free subpackage
+// github.com/go-images/images/ops and forwarded here under the same names.
+// A program that only processes pixels should import ops: importing this
+// package links every decoder above, because each registers itself in an init
+// function and the linker keeps what an init reaches.
+//
 // docs/perf.md reports honest go-images-vs-scikit-image/SciPy benchmarks and
 // correctness checks for the hot operations.
 package images
