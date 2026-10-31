@@ -49,8 +49,9 @@ const (
 
 // The errors of [ops], under their names here.
 var (
-	ErrSkewBlank = ops.ErrSkewBlank
-	ErrSkewEmpty = ops.ErrSkewEmpty
+	ErrSkewAtLimit = ops.ErrSkewAtLimit
+	ErrSkewBlank   = ops.ErrSkewBlank
+	ErrSkewEmpty   = ops.ErrSkewEmpty
 )
 
 // AdjustBrightness forwards to [ops.AdjustBrightness], the codec-free implementation.

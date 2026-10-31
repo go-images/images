@@ -133,6 +133,24 @@ func (o SkewOptions) withDefaults() SkewOptions {
 var (
 	ErrSkewEmpty = errors.New("ops: the image has no pixels")
 	ErrSkewBlank = errors.New("ops: the image has nothing marked on it, so it has no skew")
+
+	// ErrSkewAtLimit says the best score was found at an edge of the search,
+	// so the answer is a BOUND and not a measurement: the true maximum is at
+	// that angle or beyond it, and nothing here can tell which.
+	//
+	// ⛔ FOUND ON REAL SCANS, AND NOT BY ANY SYNTHETIC TEST. Page 3 of
+	// bdrc-W1KG4230 in the pdfscans corpus is an overscanned frame that comes
+	// out 99.2% ink: it has no text lines, so the profile has no peak, and the
+	// score simply grows with the shear. Measured, the reported angle tracked
+	// the search exactly — −5.00° at MaxAngle 5, −10.00° at 10, −20.00° at 20,
+	// −35.00° at 35 — and the caller was told −10.00° as if it had been read
+	// off the page. Deskewing then turned a page by ten degrees for no reason,
+	// and a second measurement still said −10.00°.
+	//
+	// A caller who means "find it however far it has gone" raises MaxAngle; a
+	// caller who gets this on a page of text is being told the page is not a
+	// page of text.
+	ErrSkewAtLimit = errors.New("ops: the best angle is at the edge of the search, so it is a bound and not a measurement")
 )
 
 // SkewAngle is how far the page is tilted, in degrees, in [Rotate]'s own
@@ -150,7 +168,32 @@ func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return searchSkew(marks, w, h, opt), nil
+	best := searchSkew(marks, w, h, opt)
+
+	// ⛔ A MAXIMUM IS LOCATED ONLY IF IT IS BRACKETED, and the test is whether
+	// the score still RISES on the way out — not whether the answer sits
+	// exactly on the boundary. Measured: a page tilted 9° searched to ±2°
+	// comes back at −1.95°, a fine step short of the edge, because the
+	// discretised scores wobble as they climb. An equality test on the bound
+	// missed it, and that near miss is the common shape rather than the
+	// exception.
+	//
+	// So when the best falls in the outermost coarse interval, the score is
+	// evaluated one coarse step BEYOND the bound — as a test, never as an
+	// answer. If it is higher, the maximum is outside the range the caller
+	// allowed and what came back is a bound. The probe costs one projection,
+	// and only on the pages that need it.
+	//
+	// The bound is returned alongside the error, because "at least this far"
+	// is what the caller needs in order to decide to widen the search.
+	if math.Abs(best) > opt.MaxAngle-opt.Coarse {
+		outward := math.Copysign(opt.MaxAngle+opt.Coarse, best)
+		if skewScore(marks, w, h, outward, opt) > skewScore(marks, w, h, best, opt) {
+			return best, fmt.Errorf("%w: still rising at %+.2f° with the search bounded at %g°",
+				ErrSkewAtLimit, best, opt.MaxAngle)
+		}
+	}
+	return best, nil
 }
 
 // searchSkew is the coarse-then-fine maximisation, split out so a test can

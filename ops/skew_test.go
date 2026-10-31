@@ -381,25 +381,83 @@ func TestSkewAngleBoundsTheWorkingImage(t *testing.T) {
 	t.Logf("scaled from %d to at most 40 000 pixels, recovered %+.2f°", 600*800, got)
 }
 
-func TestSkewAngleStaysInsideTheSearch(t *testing.T) {
-	// ⛔ THE CASE THAT FINDS THE UNCLAMPED REFINEMENT, and the reason it is
-	// planted just OUTSIDE MaxAngle rather than far outside. The coarse pass
-	// then puts its best on the boundary, because that is the closest it is
-	// allowed to the truth — and a refinement of best±Coarse from there runs a
-	// full coarse step beyond the bound. An angle planted in the middle of the
-	// range cannot see this: the refinement never touches an edge, which is why
-	// the first version of this test passed over the bug and only a mutant
-	// elsewhere exposed it.
+// overInkedPage is the shape of the real failure: an overscanned frame, almost
+// all ink, with no text lines in it. Page 3 of bdrc-W1KG4230 in the pdfscans
+// corpus renders at 99.2% ink and page 68 at 99.7%.
+func overInkedPage(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	seed := uint32(0x5CA4)
+	for i := 0; i < len(img.Pix); i += 4 {
+		seed = seed*1664525 + 1013904223
+		v := uint8(10 + seed>>28) // dark, with a little grain
+		if seed>>16%256 < 2 {     // and a scattering of light specks
+			v = 230
+		}
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = v, v, v, 0xff
+	}
+	return img
+}
+
+func TestSkewAngleRefusesAPageWithNoPeakToFind(t *testing.T) {
+	// ⛔ THE DEFECT REAL SCANS FOUND AND NO SYNTHETIC TEST DID. A page with no
+	// text lines has no peak in its profile, so the score simply grows with
+	// the shear and the search returns its own edge — and the caller was told
+	// that edge as though it had been read off the page. Measured on
+	// bdrc-W1KG4230 page 3: −5.00° at MaxAngle 5, −10.00° at 10, −20.00° at
+	// 20, −35.00° at 35. Deskew then turned the page by ten degrees for no
+	// reason, and measuring the result still said −10.00°.
+	page := overInkedPage(400, 520)
+	for _, max := range []float64{5, 10, 20} {
+		got, err := SkewAngle(page, SkewOptions{MaxAngle: max})
+		if !errors.Is(err, ErrSkewAtLimit) {
+			t.Errorf("MaxAngle %g: got (%+.2f°, %v), want ErrSkewAtLimit", max, got, err)
+		}
+		// The bound is returned WITH the error, because "at least this far" is
+		// what a caller needs in order to decide to widen the search — and it
+		// must still be inside the range they asked for.
+		if got < -max || got > max {
+			t.Errorf("MaxAngle %g: the bound reported was %+.3f°, outside the range asked for", max, got)
+		}
+	}
+	// The control: a page that does have lines is measured, not refused, so
+	// the refusal is about the absence of a peak and not about the check
+	// firing on everything.
+	if _, err := SkewAngle(overWhite(Rotate(textPage(400, 520), 3, true)), SkewOptions{}); err != nil {
+		t.Errorf("a page of text was refused: %v", err)
+	}
+}
+
+func TestSkewAngleCannotSeeATiltJustOutsideTheSearch(t *testing.T) {
+	// ⛔ THE LIMIT OF THE CHECK ABOVE, WRITTEN DOWN RATHER THAN HIDDEN. The
+	// test for a bound is whether the score is still RISING on the way out,
+	// which catches a page with no peak at all. It does NOT catch a page whose
+	// real peak sits just beyond the edge: at 2.5° with the search stopped at
+	// 2°, the scores at 2° and at 3° straddle the peak and neither dominates,
+	// so the landscape inside the range looks like any other.
+	//
+	// This is a genuine limitation and the honest statement of it is that
+	// MaxAngle must be wide enough for the pages being measured, not that the
+	// function will tell you when it was not. The default of 10° covers a page
+	// dropped crookedly into a scanner, which is what it is for.
 	page := textPage(400, 520)
-	for _, tilt := range []float64{2.5, -2.5, 9, -9} {
-		tilted := overWhite(Rotate(page, tilt, true))
-		got, err := SkewAngle(tilted, SkewOptions{MaxAngle: 2})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got < -2 || got > 2 {
-			t.Errorf("tilted %+.2f° with MaxAngle 2: returned %+.3f°, outside the range asked for", tilt, got)
-		}
+	got, err := SkewAngle(overWhite(Rotate(page, 2.5, true)), SkewOptions{MaxAngle: 2})
+	if err != nil {
+		t.Logf("a tilt of 2.5° searched to ±2° is now refused (%v) — better than when this "+
+			"was written, and the limitation above can be struck out", err)
+	} else if math.Abs(got-2) > 0.1 {
+		t.Errorf("searched to ±2°, returned %+.3f°: not the bound and not the truth", got)
+	}
+	// Whatever else, the answer stays inside the range the caller asked for.
+	if got < -2 || got > 2 {
+		t.Errorf("returned %+.3f° from a search bounded at 2°", got)
+	}
+	// And the same page measures correctly once the search is wide enough.
+	wide, err := SkewAngle(overWhite(Rotate(page, 2.5, true)), SkewOptions{})
+	if err != nil {
+		t.Fatalf("the same page with the default search: %v", err)
+	}
+	if math.Abs(wide-2.5) > 0.15 {
+		t.Errorf("the same page with the default search measured %+.2f°, want +2.50°", wide)
 	}
 }
 
