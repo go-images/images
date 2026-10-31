@@ -222,15 +222,22 @@ func skewMask(img image.Image, maxPixels int) ([]skewPoint, int, int, error) {
 	return skewMaskWith(img, maxPixels, skewDownscale)
 }
 
-// ⛔ Area, NOT Bilinear — and the margin is SMALL, which is the honest
-// statement of it. Bilinear reads four neighbours whatever the scale factor,
-// so a large reduction samples the page sparsely and can step over a thin
-// stroke, where Area averages the whole footprint. That is the argument;
-// TestMeasureTheDownscaleFilter is the measurement, and over eight budgets it
-// found Area better in three (0.000° against 0.050°), equal in the rest, and
-// worse in none, over two page sizes. Both collapse together once the line
-// pitch aliases, so the filter buys a step of the search and not a different
-// limit.
+// ⛔ Area, NOT Bilinear — and the measurement does NOT say Area is better. It
+// says the choice costs nothing, which is a weaker and truer claim.
+//
+// The argument for Area is that it is the only one of the three whose support
+// grows with the scale factor: Bilinear reads four neighbours however far the
+// page is being reduced, so it samples sparsely and can step over a thin
+// stroke. TestMeasureTheDownscaleFilter put that to fifteen budgets across
+// three page sizes and found Area better in 3 rows and worse in 6 — every
+// difference one step of the search, 0.05°, except one row where Area was
+// better by 0.15°. The two filters collapse together once the line pitch
+// aliases.
+//
+// ⛔ I CLAIMED THE OPPOSITE FIRST. On two page sizes the tally was "better in
+// three, worse in none" and I wrote that down as Area winning; the third
+// corpus turned it round. Nine rows were not enough to rank two filters whose
+// difference is one quantisation step.
 const skewDownscale = Area
 
 func skewMaskWith(img image.Image, maxPixels int, mode ResizeMode) ([]skewPoint, int, int, error) {
