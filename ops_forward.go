@@ -26,17 +26,31 @@ type Kernel = ops.Kernel
 // ResizeMode is [ops.ResizeMode].
 type ResizeMode = ops.ResizeMode
 
+// SkewCriterion is [ops.SkewCriterion].
+type SkewCriterion = ops.SkewCriterion
+
+// SkewOptions is [ops.SkewOptions].
+type SkewOptions = ops.SkewOptions
+
 // The constants of [ops], under their names here.
 const (
-	Area            = ops.Area
-	Bicubic         = ops.Bicubic
-	Bilinear        = ops.Bilinear
-	BorderConstant  = ops.BorderConstant
-	BorderEdge      = ops.BorderEdge
-	InterpBilinear  = ops.InterpBilinear
-	InterpNearest   = ops.InterpNearest
-	Lanczos         = ops.Lanczos
-	NearestNeighbor = ops.NearestNeighbor
+	AdjacentDifference = ops.AdjacentDifference
+	Area               = ops.Area
+	Bicubic            = ops.Bicubic
+	Bilinear           = ops.Bilinear
+	BorderConstant     = ops.BorderConstant
+	BorderEdge         = ops.BorderEdge
+	InterpBilinear     = ops.InterpBilinear
+	InterpNearest      = ops.InterpNearest
+	Lanczos            = ops.Lanczos
+	NearestNeighbor    = ops.NearestNeighbor
+	Variance           = ops.Variance
+)
+
+// The errors of [ops], under their names here.
+var (
+	ErrSkewBlank = ops.ErrSkewBlank
+	ErrSkewEmpty = ops.ErrSkewEmpty
 )
 
 // AdjustBrightness forwards to [ops.AdjustBrightness], the codec-free implementation.
@@ -117,6 +131,11 @@ func Crop(img image.Image, r image.Rectangle) (*image.RGBA, error) {
 // CropRaster forwards to [ops.CropRaster], the codec-free implementation.
 func CropRaster(src *raster.Image, r image.Rectangle) (*raster.Image, error) {
 	return ops.CropRaster(src, r)
+}
+
+// Deskew forwards to [ops.Deskew], the codec-free implementation.
+func Deskew(img image.Image, threshold float64, opt SkewOptions) (*image.RGBA, float64, error) {
+	return ops.Deskew(img, threshold, opt)
 }
 
 // Dilate forwards to [ops.Dilate], the codec-free implementation.
@@ -342,6 +361,11 @@ func Sharpen(img image.Image) *image.RGBA {
 // SharpenRaster forwards to [ops.SharpenRaster], the codec-free implementation.
 func SharpenRaster(src *raster.Image) *raster.Image {
 	return ops.SharpenRaster(src)
+}
+
+// SkewAngle forwards to [ops.SkewAngle], the codec-free implementation.
+func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
+	return ops.SkewAngle(img, opt)
 }
 
 // Sobel forwards to [ops.Sobel], the codec-free implementation.
