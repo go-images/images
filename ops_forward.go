@@ -52,6 +52,7 @@ var (
 	ErrSkewAtLimit = ops.ErrSkewAtLimit
 	ErrSkewBlank   = ops.ErrSkewBlank
 	ErrSkewEmpty   = ops.ErrSkewEmpty
+	ErrSkewOptions = ops.ErrSkewOptions
 )
 
 // AdjustBrightness forwards to [ops.AdjustBrightness], the codec-free implementation.

@@ -360,6 +360,36 @@ func TestSkewAngleRejectsABudgetTooSmallForAPage(t *testing.T) {
 	t.Logf("refused: %v", err)
 }
 
+func TestSkewAngleRejectsASearchItCannotCarryOut(t *testing.T) {
+	// ⛔ SECURITY, NOT TIDINESS: SkewOptions may carry values a caller worked
+	// out from a file. The planted positive for each is in the name.
+	page := textPage(300, 400)
+	for _, tc := range []struct {
+		why string
+		opt SkewOptions
+	}{
+		{"90° makes tan overflow the padding", SkewOptions{MaxAngle: 90}},
+		{"89° probes 90° on the way out", SkewOptions{MaxAngle: 89}},
+		{"a negative search runs zero times and reports 0°", SkewOptions{MaxAngle: -10}},
+		{"a NaN search runs zero times and reports 0°", SkewOptions{MaxAngle: math.NaN()}},
+		{"a negative coarse step runs backwards", SkewOptions{Coarse: -1}},
+		{"a coarse step wider than the search", SkewOptions{MaxAngle: 2, Coarse: 5}},
+		{"a fine step wider than the coarse one steps over it", SkewOptions{Coarse: 0.5, Fine: 2}},
+		{"a NaN fine step", SkewOptions{Fine: math.NaN()}},
+		{"a negative pixel budget", SkewOptions{MaxPixels: -1}},
+	} {
+		got, err := SkewAngle(page, tc.opt)
+		if !errors.Is(err, ErrSkewOptions) {
+			t.Errorf("%s: got (%+.2f°, %v), want ErrSkewOptions", tc.why, got, err)
+		}
+	}
+	// The control: the widest search that IS allowed must work, so the guard
+	// is about the arithmetic and not a blanket refusal.
+	if _, err := SkewAngle(overWhite(Rotate(page, 20, true)), SkewOptions{MaxAngle: maxSkewAngle}); err != nil {
+		t.Errorf("the widest allowed search was refused: %v", err)
+	}
+}
+
 func TestSkewAngleRejectsAnEmptyImage(t *testing.T) {
 	if _, err := SkewAngle(image.NewRGBA(image.Rect(0, 0, 0, 0)), SkewOptions{}); !errors.Is(err, ErrSkewEmpty) {
 		t.Fatal("an image with no pixels must report ErrSkewEmpty")
@@ -516,30 +546,42 @@ func TestSkewScoreIgnoresThePadding(t *testing.T) {
 	}
 }
 
+// FuzzSkewAngle drives both the pixels AND the options, because the one
+// overflow this package had lived in the options rather than the image: the
+// profile is padded by |tan(angle)|·width rows, and a MaxAngle near 90° makes
+// that product overflow an int. An image-only fuzzer would have run for ever
+// without reaching it.
 func FuzzSkewAngle(f *testing.F) {
-	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8})
-	f.Add([]byte{})
-	f.Fuzz(func(t *testing.T, data []byte) {
+	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8}, 10.0, 1.0, 0.05, 2_000_000)
+	f.Add([]byte{}, 0.0, 0.0, 0.0, 0)
+	f.Add([]byte{255, 0, 255, 0}, 89.9, 1.0, 0.05, 1)
+	f.Add([]byte{1}, math.NaN(), math.Inf(1), math.Inf(-1), -1)
+	f.Fuzz(func(t *testing.T, data []byte, maxAngle, coarse, fine float64, maxPixels int) {
 		if len(data) == 0 {
 			return
 		}
-		// Shape an image out of the bytes: the first two choose the
-		// dimensions, the rest are pixels (tiled if short).
+		// Shape an image out of the bytes: the ends choose the dimensions, the
+		// rest are pixels (tiled if short).
 		w := 1 + int(data[0])%40
 		h := 1 + int(data[len(data)-1])%40
 		img := image.NewRGBA(image.Rect(0, 0, w, h))
 		for i := range img.Pix {
 			img.Pix[i] = data[i%len(data)]
 		}
-		angle, err := SkewAngle(img, SkewOptions{})
+		opt := SkewOptions{MaxAngle: maxAngle, Coarse: coarse, Fine: fine, MaxPixels: maxPixels}
+		angle, err := SkewAngle(img, opt)
 		if err != nil {
 			return // a refusal is a valid answer, and the only other one
 		}
-		if angle < -10.001 || angle > 10.001 {
-			t.Fatalf("%dx%d: angle %v outside the default search", w, h, angle)
-		}
+		// Having been answered rather than refused, the options were accepted,
+		// so the answer must lie inside the search they described — with the
+		// zero value standing for the default.
+		bound := opt.withDefaults().MaxAngle
 		if math.IsNaN(angle) {
 			t.Fatalf("%dx%d: NaN", w, h)
+		}
+		if angle < -bound-1e-9 || angle > bound+1e-9 {
+			t.Fatalf("%dx%d: angle %v outside a search bounded at %v", w, h, angle, bound)
 		}
 	})
 }

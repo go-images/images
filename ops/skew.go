@@ -129,6 +129,39 @@ func (o SkewOptions) withDefaults() SkewOptions {
 	return o
 }
 
+// maxSkewAngle is the widest search that can be carried out. Beyond it the
+// padding the shear needs stops being bounded by the page: tan(45°) is 1, so
+// the profile grows by at most the page's own width, and tan rises without
+// limit from there.
+const maxSkewAngle = 45.0
+
+// maxProbeAngle is the furthest out [SkewAngle] will look when testing whether
+// its best is really a bound. tan(60°) is under 2, so the padding stays within
+// twice the page's width; the point is only that the probe lies OUTSIDE
+// MaxAngle, not how far outside.
+const maxProbeAngle = 60.0
+
+// validate refuses a search that cannot be carried out, rather than carrying
+// out a different one. Every comparison is written so that NaN fails it.
+func (o SkewOptions) validate() error {
+	switch {
+	case !(o.MaxAngle > 0) || o.MaxAngle > maxSkewAngle:
+		return fmt.Errorf("%w: MaxAngle is %g, and must be above 0 and at most %g",
+			ErrSkewOptions, o.MaxAngle, maxSkewAngle)
+	case !(o.Coarse > 0) || o.Coarse > o.MaxAngle:
+		return fmt.Errorf("%w: the coarse step is %g, and must be above 0 and at most MaxAngle (%g)",
+			ErrSkewOptions, o.Coarse, o.MaxAngle)
+	case !(o.Fine > 0) || o.Fine > o.Coarse:
+		// A fine step wider than the coarse one is not an error of degree: the
+		// refinement would then step over the interval it was called to search.
+		return fmt.Errorf("%w: the fine step is %g, and must be above 0 and at most the coarse step (%g)",
+			ErrSkewOptions, o.Fine, o.Coarse)
+	case o.MaxPixels <= 0:
+		return fmt.Errorf("%w: MaxPixels is %d, and must be above 0", ErrSkewOptions, o.MaxPixels)
+	}
+	return nil
+}
+
 // Errors returned by the skew functions.
 var (
 	ErrSkewEmpty = errors.New("ops: the image has no pixels")
@@ -151,6 +184,28 @@ var (
 	// caller who gets this on a page of text is being told the page is not a
 	// page of text.
 	ErrSkewAtLimit = errors.New("ops: the best angle is at the edge of the search, so it is a bound and not a measurement")
+
+	// ErrSkewOptions says the search was described in a way that cannot be
+	// carried out.
+	//
+	// ⛔ THESE ARE BOUNDS ON UNTRUSTED INPUT, not tidiness. [SkewOptions] may
+	// carry values a caller computed from a file, and two of them reach
+	// arithmetic that does not survive the extremes:
+	//
+	//   - the profile is padded by |tan(angle)|·width rows, and tan grows
+	//     without bound towards 90°. At MaxAngle 89 the outward probe in
+	//     [SkewAngle] evaluates 90° itself, where tan is about 1.6e16 and
+	//     int(tan·width) overflows — a panic or an allocation of whatever
+	//     nonsense the overflow produced. MaxAngle is capped at 45°, where the
+	//     padding is at most the page's own width, and the doc on MaxAngle
+	//     already says the shear stops standing in for a rotation long before
+	//     that.
+	//
+	//   - a negative or NaN MaxAngle made both loops run zero times and the
+	//     function returned 0° — "measured and found level" — without ever
+	//     looking at the page. A silently empty search is the worst of the
+	//     three outcomes, which is why this is an error and not a clamp.
+	ErrSkewOptions = errors.New("ops: the skew search cannot be carried out as described")
 )
 
 // SkewAngle is how far the page is tilted, in degrees, in [Rotate]'s own
@@ -164,6 +219,9 @@ var (
 // found level.
 func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
 	opt = opt.withDefaults()
+	if err := opt.validate(); err != nil {
+		return 0, err
+	}
 	marks, w, h, err := skewMask(img, opt.MaxPixels)
 	if err != nil {
 		return 0, err
@@ -187,7 +245,15 @@ func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
 	// The bound is returned alongside the error, because "at least this far"
 	// is what the caller needs in order to decide to widen the search.
 	if math.Abs(best) > opt.MaxAngle-opt.Coarse {
-		outward := math.Copysign(opt.MaxAngle+opt.Coarse, best)
+		// ⛔ THE PROBE HAS ITS OWN CEILING, and the fuzzer found out why in
+		// under a second. MaxAngle is capped at 45° so that the padding stays
+		// bounded by the page — but the probe looks a COARSE STEP beyond the
+		// bound, and the coarse step may itself be as large as MaxAngle. At
+		// MaxAngle 45 with Coarse 45 the probe evaluated 90°, where tan is
+		// about 1.6e16, and `makeslice: len out of range` panicked on the
+		// padding. A guard that bounds one term of a sum does not bound the
+		// sum.
+		outward := math.Copysign(math.Min(opt.MaxAngle+opt.Coarse, maxProbeAngle), best)
 		if skewScore(marks, w, h, outward, opt) > skewScore(marks, w, h, best, opt) {
 			return best, fmt.Errorf("%w: still rising at %+.2f° with the search bounded at %g°",
 				ErrSkewAtLimit, best, opt.MaxAngle)
