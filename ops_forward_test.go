@@ -4,6 +4,7 @@ package images
 
 import (
 	"image"
+	"image/color"
 	"reflect"
 	"testing"
 
@@ -14,6 +15,23 @@ func fwdImage() *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for i := range img.Pix {
 		img.Pix[i] = uint8(i * 37)
+	}
+	return img
+}
+
+// fwdSkewPage is a page with horizontal lines on it, because the skew
+// forwarders are the only ones that REFUSE an input: fwdImage is a four-pixel
+// gradient, and both of them would come back as ErrSkewBlank — comparing two
+// refusals would say nothing about what is forwarded.
+func fwdSkewPage() *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 24, 24))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	for y := 2; y < 22; y += 4 {
+		for x := 2; x < 22; x++ {
+			img.SetRGBA(x, y, color.RGBA{0, 0, 0, 0xff})
+		}
 	}
 	return img
 }
@@ -82,6 +100,11 @@ func TestForwardersAreIdentity(t *testing.T) {
 		a0, a1 := CropRaster(ops.AsRaster(fwdImage()), image.Rect(0, 0, 2, 2))
 		b0, b1 := ops.CropRaster(ops.AsRaster(fwdImage()), image.Rect(0, 0, 2, 2))
 		check("CropRaster", []any{a0, a1}, []any{b0, b1})
+	}
+	{
+		a0, a1, a2 := Deskew(fwdSkewPage(), 0.5, SkewOptions{})
+		b0, b1, b2 := ops.Deskew(fwdSkewPage(), 0.5, SkewOptions{})
+		check("Deskew", []any{a0, a1, a2}, []any{b0, b1, b2})
 	}
 	{
 		a0, a1 := Dilate(fwdImage(), 1)
@@ -176,6 +199,11 @@ func TestForwardersAreIdentity(t *testing.T) {
 	check("ScharrRaster", []any{ScharrRaster(ops.AsRaster(fwdImage()))}, []any{ops.ScharrRaster(ops.AsRaster(fwdImage()))})
 	check("Sharpen", []any{Sharpen(fwdImage())}, []any{ops.Sharpen(fwdImage())})
 	check("SharpenRaster", []any{SharpenRaster(ops.AsRaster(fwdImage()))}, []any{ops.SharpenRaster(ops.AsRaster(fwdImage()))})
+	{
+		a0, a1 := SkewAngle(fwdSkewPage(), SkewOptions{})
+		b0, b1 := ops.SkewAngle(fwdSkewPage(), SkewOptions{})
+		check("SkewAngle", []any{a0, a1}, []any{b0, b1})
+	}
 	check("Sobel", []any{Sobel(fwdImage())}, []any{ops.Sobel(fwdImage())})
 	check("SobelMag", []any{SobelMag(fwdImage())}, []any{ops.SobelMag(fwdImage())})
 	check("SobelMagRaster", []any{SobelMagRaster(ops.AsRaster(fwdImage()))}, []any{ops.SobelMagRaster(ops.AsRaster(fwdImage()))})

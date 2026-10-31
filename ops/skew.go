@@ -80,6 +80,36 @@ type SkewOptions struct {
 	// search evaluates the profile once per candidate angle, so cost is
 	// pixels × angles: a 100-megapixel scan would be some sixty passes over
 	// a hundred million pixels because someone handed us a large file.
+	//
+	// ⛔ LOWERING IT TOO FAR BREAKS THE MEASUREMENT SILENTLY, and that is a
+	// limit rather than a bug to be fixed here. The projection resolves text
+	// lines, and a line plus its gap is one cycle, so the reduced page needs
+	// at least two samples per line pitch — Nyquist. Measured by
+	// TestMeasureTheDownscaleFilter, as the worst error over five planted
+	// angles on pages whose lines sit fourteen pixels apart:
+	//
+	//	px per line   700×900   1400×1800
+	//	        8.8    0.000°      0.000°
+	//	        3.9    0.050°      0.000°
+	//	        2.8    0.150°      0.050°
+	//	        2.5    0.250°      4.350°
+	//	        2.0   16.150°     16.050°
+	//
+	// ⛔ TWO COLUMNS BECAUSE ONE WOULD HAVE BEEN A FALSE GENERALISATION. I
+	// wrote this table from the larger page, called the pixels per text line
+	// the one quantity that matters, and then halved the page expecting the
+	// same figures: at 2.5 px per line the smaller page is off by a quarter of
+	// a degree and the larger by over four. The number of rows the profile is
+	// built from counts too, because more of them make the peak stand out of
+	// more evidence. Two samples per line is where both collapse; the margin
+	// above it is not a property of the ratio alone.
+	//
+	// The default leaves an A4 page scanned at 300 DPI at some 1200×1700,
+	// which is five to ten pixels per line of body text. Below about three the
+	// angle is not to be trusted, and the function does NOT say so: see
+	// TestMeasureTheConfidenceOfThePeak, which measured the obvious confidence
+	// statistic and found that no single threshold on it tells the sound pages
+	// from the broken ones across both page sizes.
 	MaxPixels int
 }
 
@@ -116,11 +146,17 @@ var (
 // found level.
 func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
 	opt = opt.withDefaults()
-	mask, w, h, err := skewMask(img, opt.MaxPixels)
+	marks, w, h, err := skewMask(img, opt.MaxPixels)
 	if err != nil {
 		return 0, err
 	}
+	return searchSkew(marks, w, h, opt), nil
+}
 
+// searchSkew is the coarse-then-fine maximisation, split out so a test can
+// drive it over a mask built differently — see TestMeasureTheDownscaleFilter.
+// opt must already have had withDefaults applied.
+func searchSkew(marks []skewPoint, w, h int, opt SkewOptions) float64 {
 	// ⛔ THE SEARCH SHEARS RATHER THAN ROTATES, which is Baird's trick and not
 	// only a saving. A rotation resamples, and resampling BLURS the very line
 	// structure being measured — the sharper the profile, the better the peak,
@@ -128,7 +164,7 @@ func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
 	// moves whole pixels between rows and leaves the counts exact.
 	best, bestScore := 0.0, math.Inf(-1)
 	for a := -opt.MaxAngle; a <= opt.MaxAngle+1e-9; a += opt.Coarse {
-		if s := skewScore(mask, w, h, a, opt); s > bestScore {
+		if s := skewScore(marks, w, h, a, opt); s > bestScore {
 			best, bestScore = a, s
 		}
 	}
@@ -141,11 +177,11 @@ func SkewAngle(img image.Image, opt SkewOptions) (float64, error) {
 	lo := math.Max(best-opt.Coarse, -opt.MaxAngle)
 	hi := math.Min(best+opt.Coarse, opt.MaxAngle)
 	for a := lo; a <= hi+1e-9; a += opt.Fine {
-		if s := skewScore(mask, w, h, a, opt); s > bestScore {
+		if s := skewScore(marks, w, h, a, opt); s > bestScore {
 			best, bestScore = a, s
 		}
 	}
-	return best, nil
+	return best
 }
 
 // Deskew measures the page's tilt and puts it straight, returning the
@@ -183,6 +219,21 @@ type skewPoint struct{ x, y int32 }
 // down to the pixel budget. It returns them with the working width and height,
 // which the projection needs to size its profile.
 func skewMask(img image.Image, maxPixels int) ([]skewPoint, int, int, error) {
+	return skewMaskWith(img, maxPixels, skewDownscale)
+}
+
+// ⛔ Area, NOT Bilinear — and the margin is SMALL, which is the honest
+// statement of it. Bilinear reads four neighbours whatever the scale factor,
+// so a large reduction samples the page sparsely and can step over a thin
+// stroke, where Area averages the whole footprint. That is the argument;
+// TestMeasureTheDownscaleFilter is the measurement, and over eight budgets it
+// found Area better in three (0.000° against 0.050°), equal in the rest, and
+// worse in none, over two page sizes. Both collapse together once the line
+// pitch aliases, so the filter buys a step of the search and not a different
+// limit.
+const skewDownscale = Area
+
+func skewMaskWith(img image.Image, maxPixels int, mode ResizeMode) ([]skewPoint, int, int, error) {
 	b := img.Bounds()
 	if b.Dx() <= 0 || b.Dy() <= 0 {
 		return nil, 0, 0, ErrSkewEmpty
@@ -191,12 +242,18 @@ func skewMask(img image.Image, maxPixels int) ([]skewPoint, int, int, error) {
 	if n := b.Dx() * b.Dy(); n > maxPixels {
 		// One scale for both axes: the skew angle of a page is not preserved
 		// by squashing one direction more than the other.
+		//
+		// ⛔ The dimensions are NOT clamped up to one. A budget too small to
+		// hold a single row of the page rounds a side to zero, and Resize
+		// refuses that — which is the right answer, because a caller asking
+		// for a page in one pixel is asking for something that cannot carry an
+		// angle. Clamping to 1×1 would instead hand the search a mask of one
+		// pixel and report an angle measured on nothing.
 		s := math.Sqrt(float64(maxPixels) / float64(n))
-		w := max(1, int(float64(b.Dx())*s))
-		h := max(1, int(float64(b.Dy())*s))
-		small, err := Resize(img, w, h, Bilinear)
+		w, h := int(float64(b.Dx())*s), int(float64(b.Dy())*s)
+		small, err := Resize(img, w, h, mode)
 		if err != nil {
-			return nil, 0, 0, fmt.Errorf("ops: scaling the page down to %d×%d before measuring its skew: %w", w, h, err)
+			return nil, 0, 0, fmt.Errorf("ops: scaling the page down to %d×%d to fit a %d-pixel budget: %w", w, h, maxPixels, err)
 		}
 		work, b = small, small.Bounds()
 	}

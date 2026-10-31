@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -34,7 +35,7 @@ func textPage(w, h int) *image.RGBA {
 	ink := color.RGBA{0x14, 0x14, 0x14, 0xff}
 
 	margin := w / 10
-	lineH, gap := 6, 8
+	lineH, gap := 6, 8 // skewPitch apart, which the budget measurements rely on
 	// A deterministic pseudo-random sequence: the page must be the same page
 	// on every run, or a flaky recovery would be unattributable.
 	seed := uint32(0x5EED)
@@ -78,6 +79,14 @@ func overWhite(img image.Image) *image.RGBA {
 // coarse step, so only the fine pass can find it), and both signs out to the
 // tilt a page gets from being dropped into a scanner.
 var plantedAngles = []float64{-8, -5, -2.5, -0.75, 0, 0.75, 2.5, 5, 8}
+
+// skewPlanted is the angle set the two budget measurements use, kept in one
+// place because BOTH of their findings depend on which angles are in it.
+var skewPlanted = []float64{-7, -2.5, 0, 1.25, 6}
+
+// skewPitch is the distance between the text lines [textPage] draws, which is
+// the quantity the budget measurements are really about.
+const skewPitch = 6 + 8
 
 func TestSkewAngleRecoversAPlantedAngle(t *testing.T) {
 	page := textPage(600, 800)
@@ -324,9 +333,209 @@ func TestSkewAngleRejectsAPageWithNothingOnIt(t *testing.T) {
 	}
 }
 
+func TestDeskewPassesOnTheRefusal(t *testing.T) {
+	// A page Deskew cannot measure must not come back silently unrotated: the
+	// caller asked for a page put straight and has to learn that nothing was.
+	blank := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	for i := range blank.Pix {
+		blank.Pix[i] = 0xff
+	}
+	out, angle, err := Deskew(blank, 0.5, SkewOptions{})
+	if !errors.Is(err, ErrSkewBlank) {
+		t.Fatalf("got (%v, %v, %v), want ErrSkewBlank", out, angle, err)
+	}
+	if out != nil || angle != 0 {
+		t.Errorf("a refusal must carry no image and no angle, got %v and %v", out, angle)
+	}
+}
+
+func TestSkewAngleRejectsABudgetTooSmallForAPage(t *testing.T) {
+	// ⛔ The dimensions are deliberately NOT clamped up to one. A budget that
+	// rounds a side to zero is a caller asking for a page in a pixel, and an
+	// angle measured on a 1×1 mask would be a number with nothing behind it.
+	page := textPage(600, 800)
+	_, err := SkewAngle(page, SkewOptions{MaxPixels: 1})
+	if err == nil {
+		t.Fatal("a one-pixel budget was accepted")
+	}
+	if !strings.Contains(err.Error(), "budget") {
+		t.Errorf("the error should say the budget is the cause: %v", err)
+	}
+	t.Logf("refused: %v", err)
+}
+
 func TestSkewAngleRejectsAnEmptyImage(t *testing.T) {
 	if _, err := SkewAngle(image.NewRGBA(image.Rect(0, 0, 0, 0)), SkewOptions{}); !errors.Is(err, ErrSkewEmpty) {
 		t.Fatal("an image with no pixels must report ErrSkewEmpty")
+	}
+}
+
+// TestMeasureTheDownscaleFilter chooses the filter the bound uses, instead of
+// taking the obvious one. Bilinear reads four neighbours whatever the scale
+// factor, so reducing a page sevenfold samples it sparsely and can step over a
+// thin stroke; Area averages the whole footprint, which is what a reduction
+// asks for. Which matters HERE is a question about recovering planted angles,
+// so it is measured.
+func TestMeasureTheDownscaleFilter(t *testing.T) {
+	// The budgets are the five rows quoted in the MaxPixels documentation,
+	// chosen to bracket the collapse rather than to sample evenly: the whole
+	// point is where it breaks, and every row costs a full search under -race.
+	//
+	// ⛔ DO NOT TRIM skewPlanted TO SAVE TIME. I shortened it to three angles
+	// and the finding CHANGED: budget 80 000 reported 0.000° instead of
+	// 4.350°, because the angle that failed there was one of the two I had
+	// dropped. A collapse that only some angles witness is still a collapse.
+	atHalf := map[string]float64{}
+	for _, c := range skewCorpora(t) {
+		for i, budget := range c.budgets {
+			for _, mode := range []struct {
+				name string
+				m    ResizeMode
+			}{{"Bilinear", Bilinear}, {"Area", Area}} {
+				worst, rw, rh := c.measure(t, budget, mode.m)
+				t.Logf("%-9s budget %7d (%dx%d, %.1f px per line), %-8s: worst |error| over %d angles %.3f°",
+					c.name, budget, rw, rh, c.perLine(rh), mode.name, len(skewPlanted), worst)
+				if i == 3 && mode.m == skewDownscale { // the 2.5 px-per-line row
+					atHalf[c.name] = worst
+				}
+			}
+		}
+	}
+
+	// ⛔ THE FINDING THIS ASSERTS IS NOT THE ONE I SET OUT TO MEASURE. I had
+	// written that the collapse is about pixels per text line and nothing
+	// else, and halved the page to make the test cheap — expecting the same
+	// figures. At 2.5 pixels per line the small page is off by a quarter of a
+	// degree and the large one by over four: the number of ROWS the profile is
+	// built from matters as well, because more of them make the peak stand out
+	// of more evidence. Same ratio, different answer, so the quantity is not
+	// sufficient on its own.
+	t.Logf("at 2.5 px per line: %s %.3f°, %s %.3f°", "700x900", atHalf["700x900"], "1400x1800", atHalf["1400x1800"])
+	if atHalf["1400x1800"] < 1 || atHalf["700x900"] > 1 {
+		t.Errorf("pixels per text line now predicts the collapse on its own "+
+			"(small %.3f°, large %.3f° at the same 2.5 px per line): the documented limit can be stated in that one quantity",
+			atHalf["700x900"], atHalf["1400x1800"])
+	}
+}
+
+// A skewCorpus is a page, its tilted copies and the pixel budgets that reduce
+// it to a known number of pixels per text line. Both corpora are built ONCE
+// per test and share the same five ratios, so a row of one lines up with the
+// same row of the other.
+//
+// ⛔ The copies are rotated outside the budget and filter loops. The first
+// version rotated inside them — fifty rotations of a 2.5-megapixel page — and
+// pushed the package past `go test`'s ten-minute timeout under -race, which is
+// a CI failure waiting to happen rather than a slow test.
+type skewCorpus struct {
+	name    string
+	page    *image.RGBA
+	tilted  []*image.RGBA
+	budgets []int
+}
+
+func skewCorpora(t *testing.T) []skewCorpus {
+	t.Helper()
+	build := func(name string, w, h int, budgets []int) skewCorpus {
+		page := textPage(w, h)
+		tilted := make([]*image.RGBA, len(skewPlanted))
+		for i, a := range skewPlanted {
+			tilted[i] = overWhite(Rotate(page, a, true))
+		}
+		return skewCorpus{name: name, page: page, tilted: tilted, budgets: budgets}
+	}
+	return []skewCorpus{
+		build("700x900", 700, 900, []int{250_000, 50_000, 25_000, 20_000, 12_500}),
+		// Four times the pixels and four times each budget, so every row has
+		// the same pixels per text line as the row above it.
+		build("1400x1800", 1400, 1800, []int{1_000_000, 200_000, 100_000, 80_000, 50_000}),
+	}
+}
+
+func (c skewCorpus) perLine(reducedH int) float64 {
+	return float64(skewPitch*reducedH) / float64(c.page.Rect.Dy())
+}
+
+// measure returns the worst absolute error over the planted angles at this
+// budget, with the reduced dimensions the budget produced.
+func (c skewCorpus) measure(t *testing.T, budget int, mode ResizeMode) (worst float64, rw, rh int) {
+	t.Helper()
+	for i, want := range skewPlanted {
+		marks, w, h, err := skewMaskWith(c.tilted[i], budget, mode)
+		if err != nil {
+			t.Fatalf("%s at %d: %v", c.name, budget, err)
+		}
+		if e := math.Abs(searchSkew(marks, w, h, SkewOptions{}.withDefaults()) - want); e > worst {
+			worst = e
+		}
+	}
+	_, rw, rh, err := skewMaskWith(c.page, budget, mode)
+	if err != nil {
+		t.Fatalf("%s at %d: %v", c.name, budget, err)
+	}
+	return worst, rw, rh
+}
+
+// TestMeasureTheConfidenceOfThePeak asked whether the detector can SEE its own
+// failure, and the answer was NO — which is why [SkewOptions.MaxPixels]
+// documents a limit instead of the code refusing to cross it.
+//
+// TestMeasureTheDownscaleFilter shows the measurement collapsing below about
+// 2.8 pixels per text line — the Nyquist limit of the line pitch, since a line
+// and its gap are one cycle — and returning an angle 16° wrong without
+// complaint. The obvious confidence is the ratio of the best score to the mean
+// over all candidate angles: a towering peak where the lines are resolvable, a
+// flat landscape where they alias.
+//
+// ⛔ MEASURED, AND IT DOES NOT SEPARATE: 1.66 at a budget that is right to
+// 0.05°, 1.75 at one that is 4.35° wrong. A threshold on this statistic would
+// reject sound pages and accept broken ones, so no gate was built on it. This
+// test asserts the NON-separation, so that if a change to the scoring ever
+// makes the two populations pull apart, it fails and says a gate has become
+// possible.
+func TestMeasureTheConfidenceOfThePeak(t *testing.T) {
+	opt := SkewOptions{}.withDefaults()
+	lowestSound, highestBroken := math.Inf(1), math.Inf(-1)
+	for _, c := range skewCorpora(t) {
+		for _, budget := range c.budgets {
+			var worstErr float64
+			lowestRatio := math.Inf(1)
+			for i, want := range skewPlanted {
+				marks, w, h, err := skewMaskWith(c.tilted[i], budget, skewDownscale)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sum, best float64
+				n := 0
+				for a := -opt.MaxAngle; a <= opt.MaxAngle+1e-9; a += opt.Coarse {
+					s := skewScore(marks, w, h, a, opt)
+					sum += s
+					best = math.Max(best, s)
+					n++
+				}
+				lowestRatio = math.Min(lowestRatio, best/(sum/float64(n)))
+				if e := math.Abs(searchSkew(marks, w, h, opt) - want); e > worstErr {
+					worstErr = e
+				}
+			}
+			// Sound means an angle still worth applying; above a degree the
+			// correction would be worse than leaving the page alone.
+			sound := worstErr < 1.0
+			t.Logf("%-9s budget %7d: worst |error| %6.3f° (%s), lowest peak/mean %5.2f",
+				c.name, budget, worstErr, map[bool]string{true: "sound", false: "BROKEN"}[sound], lowestRatio)
+			if sound {
+				lowestSound = math.Min(lowestSound, lowestRatio)
+			} else {
+				highestBroken = math.Max(highestBroken, lowestRatio)
+			}
+		}
+	}
+	t.Logf("over both corpora: lowest ratio among sound budgets %.2f, highest among broken ones %.2f",
+		lowestSound, highestBroken)
+	if lowestSound > highestBroken {
+		t.Errorf("peak/mean now SEPARATES sound from broken across both page sizes (%.2f > %.2f): "+
+			"a confidence gate has become possible, and MaxPixels should stop documenting a limit it could refuse",
+			lowestSound, highestBroken)
 	}
 }
 
