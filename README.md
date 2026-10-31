@@ -2,7 +2,7 @@
 
 # images — go-images
 
-[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-images.github.io/docs/)
+[![Docs](https://img.shields.io/badge/docs-hugo%2Bhextra-7C3AED)](https://go-images.github.io/docs/latest/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
 [![Status](https://img.shields.io/badge/status-phase%202-9a6700)](docs/plan-images.md)
@@ -169,6 +169,26 @@ Geometry:
 - `images.Rotate(img, angleDegrees, resize)` — arbitrary-angle rotation about the
   centre, bilinear, matching `skimage.transform.rotate` (byte-for-byte;
   `resize=true` grows the canvas to fit, sized exactly as scikit-image does)
+- `images.SkewAngle(img, images.SkewOptions{})` — how far a scanned page is
+  tilted, in degrees, in `Rotate`'s own convention: a page produced by
+  `Rotate(img, a, …)` measures `a`. Baird's method (*The skew angle of printed
+  documents*, Proc. SPSE 1987): the page is **sheared** rather than rotated —
+  which keeps the scan-line counts exact, where resampling would blur the very
+  line structure being measured — and the angle taken is the one that maximises
+  the variance of the marked-pixel count per scan line. `Criterion:
+  images.AdjacentDifference` selects Postl's (1986) sum of squared differences
+  between neighbouring profile elements instead; on a page of text the two agree
+  to the search step. `MaxPixels` (2 000 000 by default) bounds the work, and is
+  a bound on untrusted input rather than a speed knob: cost is pixels × angles.
+  A page with nothing on it reports `images.ErrSkewBlank` rather than 0°, which
+  would be indistinguishable from a page measured and found level.
+- `images.Deskew(img, threshold, opt)` — measure the tilt and put the page
+  straight, returning the corrected image and the angle. A tilt below
+  `threshold` degrees is reported and left alone, byte for byte: a page that is
+  already level should not come back softened by a resample. Judged by
+  tesseract, which knows nothing of this code: a page it reads at 0.968
+  similarity straight, and at 0.895 tilted by 7°, it reads back at **0.968**
+  once deskewed.
 - `images.Warp(img, inv, outW, outH, interp, mode, cval)` — general affine
   resampling, matching `skimage.transform.warp` (`clip=False`). `inv` is an
   `images.Affine` mapping output `(col,row)` to input `(col,row)` — the inverse

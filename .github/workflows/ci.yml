@@ -47,7 +47,15 @@ jobs:
         shell: bash
         run: |
           COVERPKG=$(go list ./... | paste -sd, -)
-          go test -race -coverpkg="$COVERPKG" -coverprofile=cover.out ./...
+          # ⛔ -timeout, because `go test`'s default is ten minutes PER PACKAGE
+          # and ./ops honestly needs four of them here. The race detector
+          # instruments every pixel loop in this library: measured on
+          # 2026-10-31, ./ops runs in seven seconds without -race and 258 with
+          # it, a factor of some thirty-five, and a job that died on
+          # `panic: test timed out after 10m0s` is what prompted this line.
+          # Twenty minutes is room for the suite to grow; a hang still fails,
+          # ten minutes later than it used to.
+          go test -timeout 20m -race -coverpkg="$COVERPKG" -coverprofile=cover.out ./...
           go tool cover -func=cover.out | tail -n 25
           cov=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "coverage: ${cov}%"
