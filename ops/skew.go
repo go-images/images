@@ -166,6 +166,14 @@ func Deskew(img image.Image, threshold float64, opt SkewOptions) (*image.RGBA, f
 	return Rotate(img, -angle, false), angle, nil
 }
 
+// satAdd is c+inv clamped to 255.
+func satAdd(c uint8, inv uint16) uint8 {
+	if s := uint16(c) + inv; s < 255 {
+		return uint8(s)
+	}
+	return 255
+}
+
 // A skewPoint is one marked pixel. int32 rather than int because the budget
 // caps a side well below 2³¹ and the pair then fits one eight-byte slot, which
 // halves what the inner loop pulls through the cache.
@@ -209,13 +217,24 @@ func skewMask(img image.Image, maxPixels int) ([]skewPoint, int, int, error) {
 	// *image.RGBA anchored at the origin can still be a sub-image of a wider
 	// one, whose Stride is then larger than 4*w, and ToRGBA hands such an image
 	// back untouched.
+	//
+	// ⛔ AND IT SATURATES. On premultiplied channels c ≤ a, so c + (255-a)
+	// cannot exceed 255 and a plain add would do. But [AsRGBA] views a
+	// go-gfx raster.Image — which is STRAIGHT alpha — as an *image.RGBA
+	// without copying, so this can be handed (255,255,255,0): a plain add
+	// wraps that to 254 and turns a transparent white pixel into ink. Clamping
+	// is the right answer under both conventions, because transparent over
+	// white is white either way.
 	flat := make([]uint8, 4*w*h)
 	for y := 0; y < h; y++ {
 		row := src.Pix[src.PixOffset(0, y) : src.PixOffset(0, y)+4*w]
 		out := flat[4*w*y : 4*w*(y+1)]
 		for i := 0; i < len(row); i += 4 {
-			inv := 255 - row[i+3]
-			out[i], out[i+1], out[i+2], out[i+3] = row[i]+inv, row[i+1]+inv, row[i+2]+inv, 255
+			inv := uint16(255 - row[i+3])
+			out[i] = satAdd(row[i], inv)
+			out[i+1] = satAdd(row[i+1], inv)
+			out[i+2] = satAdd(row[i+2], inv)
+			out[i+3] = 255
 		}
 	}
 

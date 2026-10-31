@@ -274,6 +274,38 @@ func TestSkewTransparentMarginIsPaper(t *testing.T) {
 	}
 }
 
+func TestSkewStraightAlphaMarginIsPaper(t *testing.T) {
+	// ⛔ The OTHER alpha convention, and the one a plain add gets wrong.
+	// AsRGBA views a go-gfx raster.Image — STRAIGHT alpha — as an *image.RGBA
+	// without copying, so white paper can arrive as (255,255,255,250) rather
+	// than premultiplied. The composite is c + (255-a); unsaturated that is
+	// (c-a-1) mod 256, which for white at α=250 is 4 — near BLACK. Every
+	// pixel of paper then reads as ink.
+	//
+	// ⛔ AND IT ASSERTS ON THE MASK, NOT ON THE ANGLE. My first version of
+	// this test planted an angle and checked the recovery, and it PASSED with
+	// the wrapping add: inverting ink and paper on a page of text leaves the
+	// horizontal structure intact — the gaps between lines are as horizontal
+	// as the lines — so the projection peaks at the same angle either way.
+	// The detector being robust to polarity is exactly why an angle cannot
+	// witness a thresholding defect.
+	page := textPage(400, 520)
+	for i := 0; i < len(page.Pix); i += 4 {
+		if page.Pix[i] > 128 {
+			page.Pix[i+3] = 250 // nearly opaque paper, as an anti-aliased render gives
+		}
+	}
+	marks, w, h, err := skewMask(page, 2_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frac := float64(len(marks)) / float64(w*h)
+	t.Logf("%.1f%% of the page reads as ink", 100*frac)
+	if frac > 0.30 {
+		t.Fatalf("%.1f%% of a page of text reads as ink: the paper is being counted", 100*frac)
+	}
+}
+
 func TestSkewAngleRejectsAPageWithNothingOnIt(t *testing.T) {
 	blank := image.NewRGBA(image.Rect(0, 0, 50, 50))
 	for i := range blank.Pix {
