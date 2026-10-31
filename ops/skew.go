@@ -371,8 +371,33 @@ func skewMaskWith(img image.Image, maxPixels int, mode ResizeMode) ([]skewPoint,
 			}
 		}
 	}
-	if len(marks) == 0 || len(marks) == w*h {
-		return nil, 0, 0, fmt.Errorf("%w: %d of %d pixels are marked", ErrSkewBlank, len(marks), w*h)
+	// ⛔ "NOTHING ON IT" IS NOT ONLY ZERO, and the floor is a MEASURED figure
+	// rather than a chosen one. This check used to be len(marks) == 0, and
+	// page 67 of bdrc-W1KG4230 in the pdfscans corpus slipped through it with
+	// 0.00159% of the page marked — a few specks — on which the detector found
+	// a confident, stable −8.00° that was pure noise, and Deskew turned the
+	// page by it.
+	//
+	// Over 62 pages of that collection answered inside the search, the ink
+	// fraction runs from 1.826% to 10.28%, median 7.84%. Page 67 is a factor
+	// of ELEVEN HUNDRED below the next lowest, and nothing lies between them.
+	//
+	// The floor itself is borrowed from a ladder measured elsewhere in this
+	// fleet (go-pdfkit/ops BlankOptions.MaxInk, on A4 at 150 DPI): one pixel
+	// is 4.6e-07 of the page, an 8-point full stop 1.8e-06, and one word of
+	// 12-point text 2.0e-04. A page carrying less ink than a single word has
+	// no text lines to be tilted. That puts the floor twelve times above page
+	// 67 and ninety times below the thinnest real page here — orders of
+	// magnitude from both populations, which is what keeps it from being a
+	// tuned number.
+	//
+	// There is deliberately no matching ceiling: an almost entirely inked page
+	// is caught by the bracketing test in [SkewAngle], which needs no
+	// threshold at all, and one failure should have one guard.
+	const leastInk = 2e-4 // one word of 12-point text on A4 at 150 DPI
+	if n := len(marks); n == w*h || float64(n) < leastInk*float64(w*h) {
+		return nil, 0, 0, fmt.Errorf("%w: %d of %d pixels are marked (%.5f%%)",
+			ErrSkewBlank, n, w*h, 100*float64(n)/float64(w*h))
 	}
 	return marks, w, h, nil
 }
