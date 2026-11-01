@@ -3,7 +3,7 @@ module github.com/go-images/images
 go 1.27.1
 
 require (
-	github.com/go-gfx/gfx v0.37.0
+	github.com/go-gfx/gfx v0.39.0
 	github.com/go-images/gif v0.2.0
 	github.com/go-images/jpeg v0.3.0
 	github.com/go-images/png v0.2.0
