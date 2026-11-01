@@ -69,6 +69,12 @@ Conversion and I/O:
 - `images.DecodePartial(r io.Reader) (*image.RGBA, int, error)` — an image that may still be arriving: the picture at full size and how many rows of it are real
 - `images.DecodePartialFile(path string) (*image.RGBA, int, error)` — the same, on a file being written
 
+Size limit: the formats decoded through go-gfx/gfx (GIF, WebP, TIFF, BMP, ICO,
+ICNS) refuse, from the header and before allocating, any image above
+`codec.DefaultMaxPixels` (40 megapixels) with an error wrapping `codec.ErrTooLarge`
+(`errors.Is` sees it) — since gfx v0.37.0. PNG and JPEG take the standard-library
+path and are not subject to this limit.
+
 ### Decoding a picture that is still arriving
 
 Every standard decoder is all-or-nothing, which for a file still arriving is the
