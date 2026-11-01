@@ -177,7 +177,7 @@ func DecodeExifTranspose(r io.Reader) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("images: decode: %w", err)
 	}
-	im, err := decodeBytes(data, 0)
+	im, err := decodeBytes(data, DecodeOptions{})
 	if err != nil {
 		return nil, err
 	}
