@@ -8,6 +8,9 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"os"
 
@@ -55,7 +58,18 @@ func DecodePartial(r io.Reader) (*image.RGBA, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("images: decode partial: %w", err)
 	}
-	return decodePartialBytes(data)
+	return decodePartialBytes(data, DecodeOptions{})
+}
+
+// DecodePartialWith is [DecodePartial] with options; only opt.MaxPixels applies.
+// An image whose header declares more pixels is refused with an error wrapping
+// codec.ErrTooLarge — the forks allocate the full declared raster up front.
+func DecodePartialWith(r io.Reader, opt DecodeOptions) (*image.RGBA, int, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, 0, fmt.Errorf("images: decode partial: %w", err)
+	}
+	return decodePartialBytes(data, opt)
 }
 
 // DecodePartialFile is [DecodePartial] on a path, for the common case of watching
@@ -65,17 +79,17 @@ func DecodePartialFile(path string) (*image.RGBA, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("images: decode partial: %w", err)
 	}
-	return decodePartialBytes(data)
+	return decodePartialBytes(data, DecodeOptions{})
 }
 
-func decodePartialBytes(data []byte) (*image.RGBA, int, error) {
+func decodePartialBytes(data []byte, opt DecodeOptions) (*image.RGBA, int, error) {
 	switch f := codec.Sniff(data); f {
 	case codec.PNG:
-		return partial(partialpng.DecodePartial, data)
+		return partial(partialpng.DecodePartial, png.DecodeConfig, data, opt)
 	case codec.JPEG:
-		return partial(partialjpeg.DecodePartial, data)
+		return partial(partialjpeg.DecodePartial, jpeg.DecodeConfig, data, opt)
 	case codec.GIF:
-		return partial(partialgif.DecodePartial, data)
+		return partial(partialgif.DecodePartial, gif.DecodeConfig, data, opt)
 	default:
 		// ⛔ Named, so a caller is told which format could not answer rather than
 		// being left to guess from a nil. A format nobody recognised and a format
@@ -90,7 +104,15 @@ func decodePartialBytes(data []byte) (*image.RGBA, int, error) {
 // ⛔ The row count survives the conversion because ToRGBA is a per-pixel transform
 // over the same rectangle: it moves no row and drops none, so a count that named
 // the source's rows names the result's.
-func partial(dec func(io.Reader) (image.Image, int, error), data []byte) (*image.RGBA, int, error) {
+func partial(dec func(io.Reader) (image.Image, int, error), conf func(io.Reader) (image.Config, error), data []byte, opt DecodeOptions) (*image.RGBA, int, error) {
+	// ⛔ The header first, as in decodeStd: the forks allocate from the declared size.
+	cfg, err := conf(bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, fmt.Errorf("images: decode partial: %w", err)
+	}
+	if err := checkConfig(cfg, opt.maxPixels()); err != nil {
+		return nil, 0, err
+	}
 	img, rows, err := dec(bytes.NewReader(data))
 	if img == nil {
 		return nil, 0, fmt.Errorf("images: decode partial: %w", err)

@@ -48,7 +48,54 @@ func Decode(r io.Reader) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("images: decode: %w", err)
 	}
-	return decodeBytes(data, 0)
+	return decodeBytes(data, DecodeOptions{})
+}
+
+// DecodeOptions tunes [DecodeWith], and mirrors github.com/go-gfx/gfx/codec.Options.
+type DecodeOptions struct {
+	// TargetSize selects among the representations of ICO and ICNS, as in
+	// [DecodeBest]; <= 0 selects the largest. Ignored for single-image formats.
+	TargetSize int
+
+	// MaxPixels refuses an image whose header declares more pixels than this,
+	// before anything is allocated for it. Zero (or negative) means
+	// codec.DefaultMaxPixels, forty million pixels.
+	//
+	// ⛔ The number it guards comes from the FILE: a PNG declaring 16000x16000 is
+	// a few dozen bytes and a gigabyte once decoded. A caller whose input is
+	// legitimately larger (a 50-megapixel camera photo) raises it; a service
+	// decoding files from strangers lowers it to what it actually needs.
+	MaxPixels int
+}
+
+// DecodeWith is [Decode] with options. An image above opt.MaxPixels is refused
+// with an error wrapping codec.ErrTooLarge ([errors.Is] sees it) for every
+// format, PNG and JPEG included; [Decode] and [DecodeBest] apply the default.
+func DecodeWith(r io.Reader, opt DecodeOptions) (*image.RGBA, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("images: decode: %w", err)
+	}
+	return decodeBytes(data, opt)
+}
+
+// maxPixels resolves the ceiling: zero or negative means the gfx default.
+func (o DecodeOptions) maxPixels() int64 {
+	if o.MaxPixels <= 0 {
+		return codec.DefaultMaxPixels
+	}
+	return int64(o.MaxPixels)
+}
+
+// checkConfig refuses an image whose header declares more than max pixels. The
+// product is taken in int64: two numbers a file chose, multiplied in int on a
+// 32-bit build, is how a ceiling is passed by overflowing past it.
+func checkConfig(cfg image.Config, max int64) error {
+	if px := int64(cfg.Width) * int64(cfg.Height); px > max {
+		return fmt.Errorf("images: decode: %w: %dx%d is %d pixels, past the %d allowed",
+			codec.ErrTooLarge, cfg.Width, cfg.Height, px, max)
+	}
+	return nil
 }
 
 // DecodeBest is [Decode] with a target pixel size for the multi-representation
@@ -63,21 +110,21 @@ func DecodeBest(r io.Reader, targetSize int) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("images: decode: %w", err)
 	}
-	return decodeBytes(data, targetSize)
+	return decodeBytes(data, DecodeOptions{TargetSize: targetSize})
 }
 
 // decodeBytes dispatches an already-buffered image on its sniffed format. PNG and
 // JPEG keep the historical standard-library path unchanged (byte-identical); all
 // other recognised formats go through the go-gfx codec registry and are
 // premultiplied to match this package's input convention.
-func decodeBytes(data []byte, targetSize int) (*image.RGBA, error) {
+func decodeBytes(data []byte, opt DecodeOptions) (*image.RGBA, error) {
 	switch codec.Sniff(data) {
 	case codec.PNG:
-		return decodeStd(png.Decode, data)
+		return decodeStd(png.Decode, png.DecodeConfig, data, opt.maxPixels())
 	case codec.JPEG:
-		return decodeStd(jpeg.Decode, data)
+		return decodeStd(jpeg.Decode, jpeg.DecodeConfig, data, opt.maxPixels())
 	default:
-		return decodeViaCodec(data, targetSize)
+		return decodeViaCodec(data, opt)
 	}
 }
 
@@ -86,7 +133,16 @@ func decodeBytes(data []byte, targetSize int) (*image.RGBA, error) {
 // image.Decode+ToRGBA behaviour for PNG and JPEG exactly: image.Decode dispatches
 // a matched PNG/JPEG signature to precisely png.Decode / jpeg.Decode, and ToRGBA
 // is applied identically — so the returned pixels are byte-for-byte unchanged.
-func decodeStd(dec func(io.Reader) (image.Image, error), data []byte) (*image.RGBA, error) {
+func decodeStd(dec func(io.Reader) (image.Image, error), conf func(io.Reader) (image.Config, error), data []byte, max int64) (*image.RGBA, error) {
+	// ⛔ The header is read FIRST: the standard decoders allocate the whole
+	// raster from the declared size before reading a pixel.
+	cfg, err := conf(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("images: decode: %w", err)
+	}
+	if err := checkConfig(cfg, max); err != nil {
+		return nil, err
+	}
 	img, err := dec(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("images: decode: %w", err)
@@ -100,8 +156,8 @@ func decodeStd(dec func(io.Reader) (image.Image, error), data []byte) (*image.RG
 // NRGBA and running it through [ToRGBA] premultiplies it exactly as ToRGBA
 // premultiplies any NRGBA source, so a decoded transparent pixel obeys the same
 // convention as a transparent PNG decoded by the standard-library path.
-func decodeViaCodec(data []byte, targetSize int) (*image.RGBA, error) {
-	rimg, err := codec.DecodeBest(data, targetSize)
+func decodeViaCodec(data []byte, opt DecodeOptions) (*image.RGBA, error) {
+	rimg, err := codec.DecodeWith(data, codec.Options{TargetSize: opt.TargetSize, MaxPixels: opt.MaxPixels})
 	if err != nil {
 		return nil, fmt.Errorf("images: decode: %w", err)
 	}

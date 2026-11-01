@@ -69,11 +69,25 @@ Conversion and I/O:
 - `images.DecodePartial(r io.Reader) (*image.RGBA, int, error)` — an image that may still be arriving: the picture at full size and how many rows of it are real
 - `images.DecodePartialFile(path string) (*image.RGBA, int, error)` — the same, on a file being written
 
-Size limit: the formats decoded through go-gfx/gfx (GIF, WebP, TIFF, BMP, ICO,
-ICNS) refuse, from the header and before allocating, any image above
-`codec.DefaultMaxPixels` (40 megapixels) with an error wrapping `codec.ErrTooLarge`
-(`errors.Is` sees it) — since gfx v0.37.0. PNG and JPEG take the standard-library
-path and are not subject to this limit.
+- `images.DecodeWith(r io.Reader, opt images.DecodeOptions) (*image.RGBA, error)` and `images.DecodePartialWith(r, opt)` — `Decode`/`DecodePartial` with options: `MaxPixels` (the pixel ceiling) and `TargetSize` (as `DecodeBest`)
+
+### Size limit
+
+An image file states its own size, and a compressed format states a large one in a
+few bytes: a 1×1 PNG whose header claims 16000×16000 made the standard decoder
+allocate about 1 GB (1 024 182 312 bytes measured) before reading a pixel. Every
+decode entry point (`Decode`, `DecodeBest`, `DecodeWith`, `DecodePartial`, `Load`,
+the Exif variants) therefore reads the header first and refuses an image above
+`DecodeOptions.MaxPixels`, **default `codec.DefaultMaxPixels` = 40 000 000**
+(a 50-megapixel camera photo is above it). The error wraps `codec.ErrTooLarge`
+(`errors.Is`), for PNG and JPEG as well as for the formats decoded through
+go-gfx/gfx, and nothing has been allocated when it is returned.
+
+```go
+// a photo library: raise the ceiling to what you actually accept
+img, err := images.DecodeWith(r, images.DecodeOptions{MaxPixels: 120_000_000})
+if errors.Is(err, codec.ErrTooLarge) { /* refuse politely */ }
+```
 
 ### Decoding a picture that is still arriving
 
