@@ -6,7 +6,7 @@ module github.com/go-images/images/benchmarks
 
 go 1.27.1
 
-require github.com/go-images/images v0.1.0
+require github.com/go-images/images v0.3.0
 
 require (
 	github.com/go-gfx/gfx v0.37.0 // indirect
