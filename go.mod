@@ -7,6 +7,7 @@ require (
 	github.com/go-images/gif v0.2.0
 	github.com/go-images/jpeg v0.3.0
 	github.com/go-images/png v0.2.0
+	github.com/go-simd/floats v0.28.0
 	github.com/sergeymakinen/go-ico v1.0.0
 	golang.org/x/image v0.47.0
 )
